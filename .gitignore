@@ -1,0 +1,7 @@
+/bin/
+*.test
+*.out
+.DS_Store
+# a local workspace with core (../juicefs, or core next to this repo): never committed
+go.work
+go.work.sum

@@ -1,0 +1,214 @@
+package juicefs
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+// FS is one JuiceFS file system as the juicefs command needs it: where its metadata and data are,
+// and the credentials to reach them. The credentials only ever go in the command's environment
+// (ACCESS_KEY, SECRET_KEY, META_PASSWORD, as JuiceFS reads them), never in its arguments, so
+// they don't show in ps or in logs.
+type FS struct {
+	Name     string // the file system's name (juicefs format … NAME)
+	Metadata string // the metadata engine's URL, without a password
+	Storage  string // the object store's type, e.g. s3
+	Bucket   string // its URL
+	Env      []string
+}
+
+// MountOptions are how a mount is made.
+type MountOptions struct {
+	Subdir       string // mount this folder of the file system as the root ("": all of it)
+	CacheDir     string
+	CacheSizeMiB int
+}
+
+// Runner runs the juicefs command. Exec is the real one; tests use a fake.
+type Runner interface {
+	// Status reports whether the file system has been formatted (juicefs status).
+	Status(ctx context.Context, fs FS) (formatted bool, err error)
+	// Format formats it (juicefs format --no-update): only ever called when Status said it wasn't.
+	Format(ctx context.Context, fs FS) error
+	// Mount mounts it at dir, in the background (juicefs mount -d).
+	Mount(ctx context.Context, fs FS, dir string, o MountOptions) error
+	// Umount unmounts what is at dir (juicefs umount).
+	Umount(ctx context.Context, dir string) error
+	// Mounted reports whether a JuiceFS mount is at dir.
+	Mounted(dir string) (bool, error)
+}
+
+// Exec runs the juicefs binary.
+type Exec struct {
+	Binary string // default "juicefs" on PATH
+	// MountInfo is the mount table to read (default /proc/self/mountinfo).
+	MountInfo string
+	// Command runs one command and returns its combined output (default: os/exec); tests replace it.
+	Command func(ctx context.Context, name string, args, env []string) (out []byte, code int, err error)
+}
+
+func (e Exec) run(ctx context.Context, env []string, args ...string) ([]byte, int, error) {
+	bin := e.Binary
+	if bin == "" {
+		bin = "juicefs"
+	}
+	cmd := e.Command
+	if cmd == nil {
+		cmd = runCommand
+	}
+	return cmd(ctx, bin, args, env)
+}
+
+func runCommand(ctx context.Context, name string, args, env []string) ([]byte, int, error) {
+	c := exec.CommandContext(ctx, name, args...)
+	c.Env = append([]string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"}, env...)
+	var out bytes.Buffer
+	c.Stdout, c.Stderr = &out, &out
+	err := c.Run()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return out.Bytes(), ee.ExitCode(), nil
+	}
+	return out.Bytes(), 0, err
+}
+
+func failed(what string, out []byte, code int, err error) error {
+	if err != nil {
+		return fmt.Errorf("juicefs %s: %w", what, err)
+	}
+	if code != 0 {
+		return fmt.Errorf("juicefs %s: exit %d: %s", what, code, lastLines(out, 5))
+	}
+	return nil
+}
+
+// lastLines keeps an error short: juicefs logs a lot before the line that matters.
+func lastLines(b []byte, n int) string {
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, " | ")
+}
+
+// Status implements Runner.
+func (e Exec) Status(ctx context.Context, fs FS) (bool, error) {
+	out, code, err := e.run(ctx, fs.Env, "status", fs.Metadata)
+	if err == nil && code != 0 && strings.Contains(string(out), "not formatted") {
+		return false, nil
+	}
+	if err := failed("status", out, code, err); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Format implements Runner.
+func (e Exec) Format(ctx context.Context, fs FS) error {
+	out, code, err := e.run(ctx, fs.Env, FormatArgs(fs)...)
+	return failed("format", out, code, err)
+}
+
+// FormatArgs are juicefs format's arguments: --no-update, so it never changes a file system that
+// is already there.
+func FormatArgs(fs FS) []string {
+	return []string{"format", "--no-update", "--storage", fs.Storage, "--bucket", fs.Bucket, fs.Metadata, fs.Name}
+}
+
+// Mount implements Runner.
+func (e Exec) Mount(ctx context.Context, fs FS, dir string, o MountOptions) error {
+	out, code, err := e.run(ctx, fs.Env, MountArgs(fs, dir, o)...)
+	return failed("mount "+dir, out, code, err)
+}
+
+// MountArgs are juicefs mount's arguments.
+func MountArgs(fs FS, dir string, o MountOptions) []string {
+	args := []string{"mount", "-d"}
+	if o.Subdir != "" {
+		args = append(args, "--subdir", o.Subdir)
+	}
+	if o.CacheDir != "" {
+		args = append(args, "--cache-dir", o.CacheDir)
+	}
+	if o.CacheSizeMiB > 0 {
+		args = append(args, "--cache-size", strconv.Itoa(o.CacheSizeMiB))
+	}
+	return append(args, fs.Metadata, dir)
+}
+
+// Umount implements Runner.
+func (e Exec) Umount(ctx context.Context, dir string) error {
+	out, code, err := e.run(ctx, nil, "umount", dir)
+	return failed("umount "+dir, out, code, err)
+}
+
+// Mounted implements Runner.
+func (e Exec) Mounted(dir string) (bool, error) {
+	p := e.MountInfo
+	if p == "" {
+		p = "/proc/self/mountinfo"
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	return MountedIn(f, dir)
+}
+
+// MountedIn reports whether a mount table (the mountinfo format) has a JuiceFS mount at dir.
+func MountedIn(r io.Reader, dir string) (bool, error) {
+	dir = filepath.Clean(dir)
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		// ID PARENT MAJ:MIN ROOT MOUNTPOINT OPTIONS [OPTIONAL…] - FSTYPE SOURCE SUPER
+		f := strings.Fields(sc.Text())
+		if len(f) < 7 {
+			continue
+		}
+		sep := -1
+		for i := 6; i < len(f); i++ {
+			if f[i] == "-" {
+				sep = i
+				break
+			}
+		}
+		if sep < 0 || sep+1 >= len(f) {
+			continue
+		}
+		if unescape(f[4]) == dir && strings.HasPrefix(f[sep+1], "fuse.juicefs") {
+			return true, nil
+		}
+	}
+	return false, sc.Err()
+}
+
+// unescape undoes mountinfo's octal escapes (\040 is a space).
+func unescape(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if n, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(n))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+var _ Runner = Exec{}
