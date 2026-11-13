@@ -267,7 +267,8 @@ func (p *Provider) root(ctx context.Context, name string) (string, error) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return "", err
 		}
-		if err := p.Run.Mount(ctx, fs, dir, MountOptions{CacheDir: filepath.Join(p.stateDir(), "cache", cl.Name)}); err != nil {
+		o := MountOptions{CacheDir: filepath.Join(p.stateDir(), "cache", cl.Name), Log: filepath.Join(p.stateDir(), cl.Name+".log")}
+		if err := p.Run.Mount(ctx, fs, dir, o); err != nil {
 			return "", err
 		}
 	}
@@ -297,9 +298,25 @@ func (p *Provider) EnsureVolume(ctx context.Context, v kplugin.Volume) (kplugin.
 	if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(h)), 0o755); err != nil {
 		return kplugin.VolumeStatus{}, err
 	}
-	// Global: no region. The size isn't enforced yet (a JuiceFS directory quota would).
-	return kplugin.VolumeStatus{Handle: h, SizeBytes: v.SizeBytes}, nil
+	// Global: no region. The size is a directory quota on the volume's folder, in whole GiB
+	// (rounded up); asked again with a bigger size, it grows at once, on every host.
+	if v.SizeBytes <= 0 {
+		return kplugin.VolumeStatus{Handle: h}, nil
+	}
+	cl, _ := p.class(v.Class)
+	fs, err := fsOf(cl, p.Secrets)
+	if err != nil {
+		return kplugin.VolumeStatus{}, err
+	}
+	gib := QuotaGiB(v.SizeBytes)
+	if err := p.Run.SetQuota(ctx, fs, "/"+h, gib); err != nil {
+		return kplugin.VolumeStatus{}, err
+	}
+	return kplugin.VolumeStatus{Handle: h, SizeBytes: gib << 30, SizeEnforced: true}, nil
 }
+
+// QuotaGiB is a size as juicefs quota takes it: whole GiB, rounded up.
+func QuotaGiB(size int64) int64 { return (size + 1<<30 - 1) >> 30 }
 
 // AttachVolume implements kplugin.Volumes: never, for a mount class.
 func (p *Provider) AttachVolume(context.Context, kplugin.Attachment) (kplugin.AttachmentStatus, error) {

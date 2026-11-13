@@ -1,0 +1,15 @@
+{
+  "name": "juicefs",
+  "controller": {
+    "root": true,
+    "capabilities": ["CAP_SYS_ADMIN"],
+    "devices": ["/dev/fuse"],
+    "writePaths": ["/var/lib/kevaso-provider-juicefs"]
+  },
+  "node": {
+    "root": true,
+    "capabilities": ["CAP_SYS_ADMIN"],
+    "devices": ["/dev/fuse"],
+    "hostMounts": true
+  }
+}

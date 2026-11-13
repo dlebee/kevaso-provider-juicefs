@@ -31,6 +31,9 @@ type MountOptions struct {
 	Subdir       string // mount this folder of the file system as the root ("": all of it)
 	CacheDir     string
 	CacheSizeMiB int
+	// Log is the background mount's log file (juicefs's default, /var/log/juicefs.log, is read-only
+	// to the controller side's unit).
+	Log string
 }
 
 // Runner runs the juicefs command. Exec is the real one; tests use a fake.
@@ -45,6 +48,10 @@ type Runner interface {
 	Umount(ctx context.Context, dir string) error
 	// Mounted reports whether a JuiceFS mount is at dir.
 	Mounted(dir string) (bool, error)
+	// SetQuota holds a folder of the file system (its path from the root, e.g. /volumes/UID/NAME)
+	// to capacityGiB (juicefs quota set --capacity): writes past it fail with "quota exceeded".
+	// Setting it again changes it at once, on every client (it grows online).
+	SetQuota(ctx context.Context, fs FS, dir string, capacityGiB int64) error
 }
 
 // Exec runs the juicefs binary.
@@ -142,7 +149,21 @@ func MountArgs(fs FS, dir string, o MountOptions) []string {
 	if o.CacheSizeMiB > 0 {
 		args = append(args, "--cache-size", strconv.Itoa(o.CacheSizeMiB))
 	}
+	if o.Log != "" {
+		args = append(args, "--log", o.Log)
+	}
 	return append(args, fs.Metadata, dir)
+}
+
+// SetQuota implements Runner.
+func (e Exec) SetQuota(ctx context.Context, fs FS, dir string, capacityGiB int64) error {
+	out, code, err := e.run(ctx, fs.Env, QuotaArgs(fs, dir, capacityGiB)...)
+	return failed("quota set "+dir, out, code, err)
+}
+
+// QuotaArgs are juicefs quota set's arguments (JuiceFS 1.1 and later; capacity in GiB).
+func QuotaArgs(fs FS, dir string, capacityGiB int64) []string {
+	return []string{"quota", "set", fs.Metadata, "--path", dir, "--capacity", strconv.FormatInt(capacityGiB, 10)}
 }
 
 // Umount implements Runner.

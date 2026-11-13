@@ -62,6 +62,43 @@ folder holding one file per credential.
 **The metadata database matters:** every host using the class must reach it. While it's down, reads
 and writes on the volumes **hang** (no errors) and resume about 2 s after it's back (research E029).
 
+## Sizes
+
+A volume's `size` is a JuiceFS **directory quota** on its folder (`juicefs quota set --capacity`,
+whole GiB, rounded up): writes past it fail. Growing the size in the silo's spec grows the quota at
+once, on every host, with the silo running. A volume without a size has no quota, and the silo's
+`status.volumes` says `sizeNotEnforced`.
+
+## Install
+
+Both sides mount FUSE file systems as root, so they need more than a plugin's default unit. The
+package says exactly what, in [`kevaso-plugin.json`](kevaso-plugin.json); `kvoadm plugin install
+--manifest` shows it and writes a unit that grants that and nothing more:
+
+| Side | Gets | Why |
+|---|---|---|
+| controller (`serve`) | root, `CAP_SYS_ADMIN` only, `/dev/fuse` only, its own mount namespace, writes only `/var/lib/kevaso-provider-juicefs` | it mounts each class's root privately, to make and remove volumes' folders |
+| node (`node`) | root, `CAP_SYS_ADMIN` only, `/dev/fuse` only, **the host's mount namespace** | its mounts must be the host's: kevasod, the container runtimes and virtiofsd (for microVMs) use them |
+
+The node side's unit keeps `KillMode=process`, so restarting the plugin doesn't kill the `juicefs`
+daemons serving silos' volumes (it finds its mounts again in the host's mount table).
+
+```bash
+kvoadm plugin install root@cp-1 --name juicefs --binary bin/kevaso-provider-juicefs-linux-amd64 --manifest kevaso-plugin.json --yes --config juicefs.json --credential r2-access-key=r2.key --credential r2-secret-key=r2.secret --credential juicefs-meta-password=meta.pw
+```
+
+```bash
+kvoadm plugin install root@hv-1 --name juicefs --side node --binary bin/kevaso-provider-juicefs-linux-amd64 --manifest kevaso-plugin.json --yes --config juicefs.json --credential r2-access-key=r2.key --credential r2-secret-key=r2.secret --credential juicefs-meta-password=meta.pw
+```
+
+## microVMs
+
+A `cloud-hypervisor` silo gets a JuiceFS volume as a folder shared over **virtiofs**: the node side
+mounts it on the host, one locked-down virtiofsd serves it to the VM, the guest mounts it by tag.
+No credential enters the VM (research E029). Its own disk can live on a JuiceFS class too
+(`disk.class: juicefs`): an image file on the volume, booted by one host at a time, so the VM moves
+anywhere with its data.
+
 ## Build
 
 ```bash
@@ -81,11 +118,7 @@ runs against both sides.
 
 ## Not yet
 
-- **Real machines.** The node side must run as root with FUSE (`/dev/fuse`) and its mounts must be
-  visible to kevasod and the container runtime (the host's mount namespace): `kvoadm plugin install`'s
-  hardened unit doesn't allow that yet, nor does it give the node side its `node.sock`. To verify on
-  a real host: `juicefs mount --subdir` of a folder the controller made; `juicefs status` saying
-  "not formatted" on a new database.
-- **microVM silos** (virtiofs from the host's mount) and the disk-image mode.
-- **Sizes**: a volume's size isn't enforced (a JuiceFS directory quota would).
+- **Checked on real machines**: `juicefs mount --subdir` of a folder the controller made,
+  `juicefs status`'s "not formatted" wording on a new database, `juicefs quota set` (core's
+  `docs/notes/virtiofs-real-machine-checklist.md` lists the commands).
 - **Running the metadata database**: bring your own, or a silo in `kevaso-system`.
