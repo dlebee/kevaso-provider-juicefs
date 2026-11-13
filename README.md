@@ -59,8 +59,12 @@ The credentials reach the `juicefs` command through its environment (`ACCESS_KEY
 `META_PASSWORD`), never its arguments. Outside systemd, `KEVASO_JUICEFS_CREDENTIALS_DIR` names a
 folder holding one file per credential.
 
-**The metadata database matters:** every host using the class must reach it. While it's down, reads
-and writes on the volumes **hang** (no errors) and resume about 2 s after it's back (research E029).
+**The metadata database matters:** every host using the class must reach it. While it's down, calls
+into the volumes **wait** (no error), and go on once it's back; but the JuiceFS client gives up after
+about 40 s of retries, and from then on they **fail** (an I/O error) until it's back (seen on Linodes
+with JuiceFS 1.4.2 and Postgres 16: a 29 s outage was waited out, an 83 s one failed writes after
+40 s). The silo isn't marked failed: its status says `VolumesResponding=False`, `NotAnswering` while
+calls wait and `Failing` with the error once they fail, and `True` again when they answer.
 
 ## Sizes
 
@@ -116,9 +120,24 @@ make test
 `juicefs` is faked; the plugin protocol's conformance suite (`kplugintest.Conformance`, from core)
 runs against both sides.
 
+On real machines, `test/e2e` (build tag `e2e`) runs the class end to end on Linodes: a backends
+Linode (Postgres for the metadata, SeaweedFS for the bucket, firewalled to the cluster), a control
+plane and two docker workers, then a silo's volume formatted, mounted, sized, moved, moved again
+when its host is powered off, cut off from its database, and deleted. It costs money and needs a
+Linode API token; it uses the Linode provider's `linodetest` package, so the workspace needs the
+provider next to it, and a `go.work` line for its unpublished version:
+
+```
+replace kevaso.com/provider-linode v0.0.0-00010101000000-000000000000 => ./provider-linode
+```
+
+```bash
+KEVASO_LINODE_TOKEN_FILE=~/linode-token.txt go test -tags e2e -count=1 -v -timeout 100m -run TestJuiceFS ./test/e2e/
+```
+
 ## Not yet
 
-- **Checked on real machines**: `juicefs mount --subdir` of a folder the controller made,
-  `juicefs status`'s "not formatted" wording on a new database, `juicefs quota set` (core's
-  `docs/notes/virtiofs-real-machine-checklist.md` lists the commands).
+- **Checked on real machines with containers only** (`test/e2e`, Linodes): microVMs over virtiofs
+  and a root disk on the class need KVM (core's `docs/notes/virtiofs-real-machine-checklist.md`).
+- **Volumes shared by several silos** (`accessMode: shared`): the API has no such field yet.
 - **Running the metadata database**: bring your own, or a silo in `kevaso-system`.
