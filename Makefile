@@ -1,6 +1,6 @@
 export GOTOOLCHAIN := auto
 
-.PHONY: test race vet build e2e
+.PHONY: test race vet lint build e2e
 
 test:                       ## unit tests (juicefs is faked: no bucket, no database)
 	go test ./...
@@ -10,6 +10,13 @@ race:
 
 vet:
 	go vet ./... && GOOS=linux go vet ./... && go vet -tags e2e ./test/e2e/
+
+# core's pinned linter and its rules (core's make lint builds it into core/bin), from the workspace
+GOLANGCI ?= ../core/bin/golangci-lint
+LINTCONF ?= ../core/.golangci.yml
+
+lint:                       ## this OS, Linux, and the e2e tests
+	$(GOLANGCI) run --config $(LINTCONF) ./... && GOOS=linux $(GOLANGCI) run --config $(LINTCONF) ./... && GOOS=linux $(GOLANGCI) run --config $(LINTCONF) --build-tags e2e ./test/e2e/
 
 build:                      ## the plugin for Linux workers and control planes
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/kevaso-provider-juicefs-linux-amd64 ./cmd/kevaso-provider-juicefs
