@@ -126,9 +126,10 @@ func (e Exec) Format(ctx context.Context, fs FS) error {
 }
 
 // FormatArgs are juicefs format's arguments: --no-update, so it never changes a file system that
-// is already there.
+// is already there; --trash-days 0, so a deleted volume's data goes at once (JuiceFS's default
+// keeps removed files, and their objects in the bucket, a day in a trash no silo can see).
 func FormatArgs(fs FS) []string {
-	return []string{"format", "--no-update", "--storage", fs.Storage, "--bucket", fs.Bucket, fs.Metadata, fs.Name}
+	return []string{"format", "--no-update", "--trash-days", "0", "--storage", fs.Storage, "--bucket", fs.Bucket, fs.Metadata, fs.Name}
 }
 
 // Mount implements Runner.

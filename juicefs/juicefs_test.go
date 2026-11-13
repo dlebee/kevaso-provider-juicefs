@@ -228,7 +228,9 @@ func TestNodeMounts(t *testing.T) {
 
 func TestArgs(t *testing.T) {
 	fs := FS{Name: "kevaso", Metadata: testMeta, Storage: "s3", Bucket: "https://b/x", Env: []string{"META_PASSWORD=p"}}
-	if got := strings.Join(FormatArgs(fs), " "); got != "format --no-update --storage s3 --bucket https://b/x "+testMeta+" kevaso" {
+	// No trash: JuiceFS 1.4 keeps removed files a day by default (format --trash-days 1), so a
+	// deleted volume's objects would have stayed in the bucket.
+	if got := strings.Join(FormatArgs(fs), " "); got != "format --no-update --trash-days 0 --storage s3 --bucket https://b/x "+testMeta+" kevaso" {
 		t.Fatalf("format: %s", got)
 	}
 	got := strings.Join(MountArgs(fs, "/var/lib/kevaso/volumes/u/home", MountOptions{Subdir: "volumes/u/home", CacheDir: "/var/cache/j", CacheSizeMiB: 1024}), " ")
