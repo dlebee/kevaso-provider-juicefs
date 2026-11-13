@@ -508,6 +508,9 @@ spec:
 		stopAt = unixOf(cl.mustSSH(ctx, db, "systemctl stop postgresql && date +%s"))
 		for end := time.Now().Add(d); time.Now().Before(end); time.Sleep(4 * time.Second) {
 			x := get("data")
+			if x.Metadata.UID == "" {
+				continue // kvo didn't answer this time: no phase to record
+			}
 			if c := x.cond("VolumesResponding"); c.Status == "False" && (len(seen) == 0 || seen[len(seen)-1].Reason != c.Reason) {
 				seen = append(seen, c)
 			}
