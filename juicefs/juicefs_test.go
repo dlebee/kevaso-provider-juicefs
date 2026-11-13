@@ -133,6 +133,32 @@ func TestFormatsOnlyOnce(t *testing.T) {
 	}
 }
 
+// Deleting a silo's volumes leaves nothing of it in the file system: each deleted silo left an
+// empty volumes/UID folder behind.
+func TestDeleteLeavesNothing(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	p := New(cfg, newFakeRunner(), testSecrets)
+	for _, id := range []string{"u1/home", "u1/data"} {
+		if _, err := p.EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	silo := filepath.Join(cfg.StateDir, "mnt", "juicefs", "volumes", "u1")
+	if err := p.DeleteVolume(ctx, kplugin.VolumeRef{Class: "juicefs", Handle: "volumes/u1/home"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(silo, "data")); err != nil {
+		t.Fatalf("the silo's other volume went too: %v", err)
+	}
+	if err := p.DeleteVolume(ctx, kplugin.VolumeRef{Class: "juicefs", Handle: "volumes/u1/data"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(silo); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("volumes/u1 is left: %v", err)
+	}
+}
+
 func TestControllerErrors(t *testing.T) {
 	ctx := context.Background()
 	run := newFakeRunner()

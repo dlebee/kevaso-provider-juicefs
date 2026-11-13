@@ -358,6 +358,10 @@ func (p *Provider) DeleteVolume(ctx context.Context, ref kplugin.VolumeRef) erro
 		p.deleting[ref.Handle] = done
 		go func() {
 			err := os.RemoveAll(dir)
+			if err == nil {
+				// The silo's folder goes with its last volume (it holds others while they're there).
+				_ = os.Remove(filepath.Dir(dir))
+			}
 			p.mu.Lock()
 			delete(p.deleting, ref.Handle)
 			if err != nil {
