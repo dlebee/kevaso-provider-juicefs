@@ -124,12 +124,8 @@ On real machines, `test/e2e` (build tag `e2e`) runs the class end to end on Lino
 Linode (Postgres for the metadata, SeaweedFS for the bucket, firewalled to the cluster), a control
 plane and two docker workers, then a silo's volume formatted, mounted, sized, moved, moved again
 when its host is powered off, cut off from its database, and deleted. It costs money and needs a
-Linode API token; it uses the Linode provider's `linodetest` package, so the workspace needs the
-provider next to it, and a `go.work` line for its unpublished version:
-
-```
-replace kevaso.com/provider-linode v0.0.0-00010101000000-000000000000 => ./provider-linode
-```
+Linode API token; its machines and sweeps are the Linode provider's (`linodetest`), so it builds in a
+workspace with that provider next to this one (`bash core/hack/workspace.sh`).
 
 ```bash
 KEVASO_LINODE_TOKEN_FILE=~/linode-token.txt go test -tags e2e -count=1 -v -timeout 100m -run TestJuiceFS ./test/e2e/
