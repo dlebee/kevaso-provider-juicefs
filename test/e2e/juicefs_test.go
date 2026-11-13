@@ -463,7 +463,7 @@ spec:
 		"%s came back with neither the mount nor the container", lost, other, took, lost)
 
 	// 6. Two silos sharing one volume.
-	t.Log("STEP 6 SKIP: the API has no accessMode (api/v1 Volume has name, class, size, mountPath, important): a volume belongs to one silo")
+	t.Log("STEP 6 SKIP: the API has no accessMode (api/v1 Volume has name, class, size, mountPath): a volume belongs to one silo")
 
 	// 7. The metadata database down. Each write in the silo is logged as "start end rc"; times come
 	// from the machines' clocks (NTP), not this one's.
