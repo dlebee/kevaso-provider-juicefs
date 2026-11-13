@@ -279,8 +279,9 @@ kind: Silo
 metadata: { name: data, namespace: e2e }
 spec:
   runtime: docker
-  image: docker.io/library/alpine:3.20
-  command: [sh, -c, "trap 'exit 0' TERM; while :; do sleep 3600 & wait; done"]
+  container:
+    image: docker.io/library/alpine:3.20
+    command: [sh, -c, "trap 'exit 0' TERM; while :; do sleep 3600 & wait; done"]
   resources: { cpu: 1, memory: 256Mi }
   availability: { onHostLoss: Move }
   volumes:
@@ -619,8 +620,9 @@ kind: Silo
 metadata: { name: keep, namespace: e2e }
 spec:
   runtime: docker
-  image: docker.io/library/alpine:3.20
-  command: [sh, -c, "trap 'exit 0' TERM; while :; do sleep 3600 & wait; done"]
+  container:
+    image: docker.io/library/alpine:3.20
+    command: [sh, -c, "trap 'exit 0' TERM; while :; do sleep 3600 & wait; done"]
   resources: { cpu: 1, memory: 128Mi }
   volumes:
     - { name: keep, class: juicefs, size: 1Gi, mountPath: /keep }
