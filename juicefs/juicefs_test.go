@@ -206,7 +206,10 @@ func TestArgs(t *testing.T) {
 		t.Fatalf("format: %s", got)
 	}
 	got := strings.Join(MountArgs(fs, "/var/lib/kevaso/volumes/u/home", MountOptions{Subdir: "volumes/u/home", CacheDir: "/var/cache/j", CacheSizeMiB: 1024}), " ")
-	if got != "mount -d --subdir volumes/u/home --cache-dir /var/cache/j --cache-size 1024 "+testMeta+" /var/lib/kevaso/volumes/u/home" {
+	// A volume's mount hides JuiceFS's own files from the silo, and keeps them off its names: on
+	// the first real mount the silo's folder listed .accesslog, .config and .stats next to its
+	// own files, and a file of its own named .config would have been shadowed by them.
+	if got != "mount -d --subdir volumes/u/home --prefix-internal --hide-internal --cache-dir /var/cache/j --cache-size 1024 "+testMeta+" /var/lib/kevaso/volumes/u/home" {
 		t.Fatalf("mount: %s", got)
 	}
 	// Exec hands the credentials to the command's environment, never its arguments.

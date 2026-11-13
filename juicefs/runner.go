@@ -141,7 +141,10 @@ func (e Exec) Mount(ctx context.Context, fs FS, dir string, o MountOptions) erro
 func MountArgs(fs FS, dir string, o MountOptions) []string {
 	args := []string{"mount", "-d"}
 	if o.Subdir != "" {
-		args = append(args, "--subdir", o.Subdir)
+		// A volume's mount is a silo's: JuiceFS's own files at its root (.accesslog, .config,
+		// .stats, .control) get a .jfs prefix, so they don't shadow the silo's files of those
+		// names (a lookup at the root answers with them first), and are left out of listings.
+		args = append(args, "--subdir", o.Subdir, "--prefix-internal", "--hide-internal")
 	}
 	if o.CacheDir != "" {
 		args = append(args, "--cache-dir", o.CacheDir)
