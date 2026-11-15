@@ -29,6 +29,16 @@ mounts just the volume's folder (`juicefs mount --subdir`), so a silo never sees
 One file system per class (not per volume) means one `juicefs format`, one metadata database and one
 bucket prefix per class, and one cache per class on each host.
 
+## Who can reach what
+
+**Root on any worker running the node side can read, change and delete every volume of the class,
+in the whole cluster**, not only the volumes of the silos on that worker. The node side holds the
+class's own credentials (the bucket's key pair and the metadata password), which open the whole
+JuiceFS file system; a silo gets only its volume's folder, but whoever is root on its host gets all
+of them. So a class is one trust domain: put on one class only silos whose hosts you trust with
+each other's data, and give tenants that must not share a host's reach classes of their own (each
+its own file system, metadata database and bucket credentials).
+
 ## Configuration
 
 `--config FILE` (JSON, not secret: credentials are only named):
