@@ -203,9 +203,15 @@ type Provider struct {
 	// DeleteWait is how long DeleteVolume waits for a volume's folder to be removed before
 	// answering kplugin.ErrInProgress (default 5s); a big folder takes a while.
 	DeleteWait time.Duration
-	Log        func(string, ...any)
+	// CallTimeout bounds each juicefs command a call runs (status, format, mount, quota; default
+	// DefaultCallTimeout): past it the command is killed and the call fails, saying so (audit K-041).
+	CallTimeout time.Duration
+	Log         func(string, ...any)
 
-	mu       sync.Mutex
+	mu sync.Mutex // the maps below only: never held across a command
+	// classMu: one root mount at a time per class (status, format, mount in order), so a slow
+	// class never holds up another's calls, nor a delete's bookkeeping.
+	classMu  map[string]*sync.Mutex
 	roots    map[string]string        // class → its mounted root
 	deleting map[string]chan struct{} // handle → closed when its folder is gone
 	delErr   map[string]error
@@ -234,6 +240,38 @@ func (p *Provider) stateDir() string {
 	return DefaultStateDir
 }
 
+// DefaultCallTimeout is how long one juicefs command may take before it is killed.
+const DefaultCallTimeout = 2 * time.Minute
+
+// bound is the context of one juicefs command.
+func (p *Provider) bound(ctx context.Context) (context.Context, context.CancelFunc) {
+	d := p.CallTimeout
+	if d <= 0 {
+		d = DefaultCallTimeout
+	}
+	return context.WithTimeout(ctx, d)
+}
+
+// timedOut says what a command killed by its deadline was.
+func timedOut(ctx context.Context, what string, err error) error {
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("%s: gave up, juicefs didn't finish within this call's deadline: %w", what, err)
+	}
+	return err
+}
+
+func (p *Provider) classLock(name string) *sync.Mutex {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.classMu == nil {
+		p.classMu = map[string]*sync.Mutex{}
+	}
+	if p.classMu[name] == nil {
+		p.classMu[name] = &sync.Mutex{}
+	}
+	return p.classMu[name]
+}
+
 // root returns the class's root, mounted: the file system is formatted first if it never was,
 // and only then (a file system that's there is never formatted again).
 func (p *Provider) root(ctx context.Context, name string) (string, error) {
@@ -241,10 +279,16 @@ func (p *Provider) root(ctx context.Context, name string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("storage class %s: %w", name, kplugin.ErrUnsupported)
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	ctx, cancel := p.bound(ctx)
+	defer cancel()
+	l := p.classLock(cl.Name)
+	l.Lock()
+	defer l.Unlock()
 	dir := filepath.Join(p.stateDir(), "mnt", cl.Name)
-	if p.roots[cl.Name] == dir {
+	p.mu.Lock()
+	known := p.roots[cl.Name] == dir
+	p.mu.Unlock()
+	if known {
 		if m, err := p.Run.Mounted(dir); err == nil && m {
 			return dir, nil
 		}
@@ -255,11 +299,11 @@ func (p *Provider) root(ctx context.Context, name string) (string, error) {
 	}
 	formatted, err := p.Run.Status(ctx, fs)
 	if err != nil {
-		return "", err
+		return "", timedOut(ctx, "juicefs status", err)
 	}
 	if !formatted {
 		if err := p.Run.Format(ctx, fs); err != nil {
-			return "", err
+			return "", timedOut(ctx, "juicefs format", err)
 		}
 		p.logf("class %s: formatted JuiceFS file system %s (it was new)", cl.Name, fs.Name)
 	}
@@ -269,13 +313,15 @@ func (p *Provider) root(ctx context.Context, name string) (string, error) {
 		}
 		o := MountOptions{CacheDir: filepath.Join(p.stateDir(), "cache", cl.Name), Log: filepath.Join(p.stateDir(), cl.Name+".log")}
 		if err := p.Run.Mount(ctx, fs, dir, o); err != nil {
-			return "", err
+			return "", timedOut(ctx, "juicefs mount", err)
 		}
 	}
+	p.mu.Lock()
 	if p.roots == nil {
 		p.roots = map[string]string{}
 	}
 	p.roots[cl.Name] = dir
+	p.mu.Unlock()
 	return dir, nil
 }
 
@@ -309,8 +355,10 @@ func (p *Provider) EnsureVolume(ctx context.Context, v kplugin.Volume) (kplugin.
 		return kplugin.VolumeStatus{}, err
 	}
 	gib := QuotaGiB(v.SizeBytes)
-	if err := p.Run.SetQuota(ctx, fs, "/"+h, gib); err != nil {
-		return kplugin.VolumeStatus{}, err
+	qctx, cancel := p.bound(ctx)
+	defer cancel()
+	if err := p.Run.SetQuota(qctx, fs, "/"+h, gib); err != nil {
+		return kplugin.VolumeStatus{}, timedOut(qctx, "juicefs quota set", err)
 	}
 	return kplugin.VolumeStatus{Handle: h, SizeBytes: gib << 30, SizeEnforced: true}, nil
 }

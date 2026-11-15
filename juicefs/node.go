@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"kevaso.com/core/sdk/kplugin"
 )
@@ -18,7 +19,13 @@ type Node struct {
 	Config
 	Run     Runner
 	Secrets Secrets
-	Log     func(string, ...any)
+	// CallTimeout bounds each juicefs command (default DefaultCallTimeout), as on the controller side.
+	CallTimeout time.Duration
+	Log         func(string, ...any)
+}
+
+func (n *Node) bound(ctx context.Context) (context.Context, context.CancelFunc) {
+	return (&Provider{CallTimeout: n.CallTimeout}).bound(ctx)
 }
 
 // NewNode returns the node side.
@@ -87,8 +94,10 @@ func (n *Node) MountVolume(ctx context.Context, m kplugin.NodeMount) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	ctx, cancel := n.bound(ctx)
+	defer cancel()
 	if err := n.Run.Mount(ctx, fs, dir, MountOptions{Subdir: m.Handle, CacheDir: n.cacheDir(cl), CacheSizeMiB: cl.CacheSizeMiB}); err != nil {
-		return err
+		return timedOut(ctx, "juicefs mount", err)
 	}
 	n.logf("class %s: mounted %s at %s", cl.Name, m.Handle, dir)
 	return nil
@@ -103,8 +112,10 @@ func (n *Node) UnmountVolume(ctx context.Context, m kplugin.NodeMount) error {
 	if mounted, err := n.Run.Mounted(dir); err != nil || !mounted {
 		return err
 	}
+	ctx, cancel := n.bound(ctx)
+	defer cancel()
 	if err := n.Run.Umount(ctx, dir); err != nil {
-		return err
+		return timedOut(ctx, "juicefs umount", err)
 	}
 	n.logf("unmounted %s", dir)
 	return nil
