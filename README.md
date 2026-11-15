@@ -70,8 +70,9 @@ calls wait and `Failing` with the error once they fail, and `True` again when th
 
 A volume's `size` is a JuiceFS **directory quota** on its folder (`juicefs quota set --capacity`,
 whole GiB, rounded up): writes past it fail. Growing the size in the silo's spec grows the quota at
-once, on every host, with the silo running. A volume without a size has no quota, and the silo's
-`status.volumes` says `sizeNotEnforced`.
+once, on every host, with the silo running. **A volume needs a size**: one without is refused (the
+silo's `status.volumes` says so, and what to give it), since without a quota nothing would stop one
+volume filling the class's bucket for every other.
 
 ## Install
 

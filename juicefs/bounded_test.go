@@ -37,11 +37,11 @@ func TestAStalledCommandHoldsUpNothingElse(t *testing.T) {
 	done := make(chan error, 1)
 	start := time.Now()
 	go func() {
-		_, err := p.EnsureVolume(context.Background(), kplugin.Volume{Class: "stalled", ID: "uid-1/data", Name: "a"})
+		_, err := p.EnsureVolume(context.Background(), kplugin.Volume{Class: "stalled", ID: "uid-1/data", Name: "a", SizeBytes: 1 << 30})
 		done <- err
 	}()
 	time.Sleep(100 * time.Millisecond)
-	if _, err := p.EnsureVolume(context.Background(), kplugin.Volume{Class: "juicefs", ID: "uid-2/data", Name: "b"}); err != nil {
+	if _, err := p.EnsureVolume(context.Background(), kplugin.Volume{Class: "juicefs", ID: "uid-2/data", Name: "b", SizeBytes: 1 << 30}); err != nil {
 		t.Fatalf("the other class: %v", err)
 	}
 	_ = p.DeleteVolume(context.Background(), kplugin.VolumeRef{Class: "juicefs", Handle: "uid-9/none"}) // takes p.mu

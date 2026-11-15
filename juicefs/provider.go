@@ -331,6 +331,11 @@ func (p *Provider) EnsureVolume(ctx context.Context, v kplugin.Volume) (kplugin.
 	if err != nil {
 		return kplugin.VolumeStatus{}, err
 	}
+	if _, ok := p.class(v.Class); ok && v.SizeBytes <= 0 {
+		// Without a size there is no quota, and nothing stops one volume filling the class's
+		// bucket for everyone (K-050).
+		return kplugin.VolumeStatus{}, fmt.Errorf("volume %s needs a size: give it one in the silo's volumes[].size (e.g. 10Gi); a volume on class %s is held to it by a quota", h, v.Class)
+	}
 	root, err := p.root(ctx, v.Class)
 	if err != nil {
 		return kplugin.VolumeStatus{}, err
@@ -346,9 +351,6 @@ func (p *Provider) EnsureVolume(ctx context.Context, v kplugin.Volume) (kplugin.
 	}
 	// Global: no region. The size is a directory quota on the volume's folder, in whole GiB
 	// (rounded up); asked again with a bigger size, it grows at once, on every host.
-	if v.SizeBytes <= 0 {
-		return kplugin.VolumeStatus{Handle: h}, nil
-	}
 	cl, _ := p.class(v.Class)
 	fs, err := fsOf(cl, p.Secrets)
 	if err != nil {

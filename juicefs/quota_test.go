@@ -11,7 +11,7 @@ import (
 )
 
 // A volume's size is a directory quota on its folder (whole GiB, rounded up), set with the class's
-// credentials in juicefs's environment; a bigger size grows it (the same handle); no size, no quota.
+// credentials in juicefs's environment; a bigger size grows it (the same handle); no size is refused.
 func TestQuota(t *testing.T) {
 	ctx := context.Background()
 	run := newFakeRunner()
@@ -30,9 +30,8 @@ func TestQuota(t *testing.T) {
 	if st2, err := p.EnsureVolume(ctx, v); err != nil || st2.Handle != st.Handle || st2.SizeBytes != 20<<30 || run.quota("/volumes/u1/home") != 20 {
 		t.Fatalf("grown: %+v %v (quota %d GiB)", st2, err, run.quota("/volumes/u1/home"))
 	}
-	none, err := p.EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: "u2/scratch"})
-	if err != nil || none.SizeEnforced || run.quota("/volumes/u2/scratch") != 0 {
-		t.Fatalf("no size: %+v %v", none, err)
+	if _, err := p.EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: "u2/scratch"}); err == nil || run.quota("/volumes/u2/scratch") != 0 {
+		t.Fatalf("no size: %v (K-050: refused)", err)
 	}
 	run.fail["quota"] = errors.New("juicefs quota set: exit 1: quota is not supported by this metadata engine")
 	if _, err := p.EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: "u3/data", SizeBytes: 1 << 30}); err == nil {

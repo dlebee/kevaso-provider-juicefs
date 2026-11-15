@@ -102,7 +102,7 @@ func TestFormatsOnlyOnce(t *testing.T) {
 		cfg := testConfig(t)
 		p := New(cfg, run, testSecrets)
 		for _, id := range []string{"u1/home", "u1/home", "u2/data"} {
-			st, err := p.EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: id, Region: "ca-central"})
+			st, err := p.EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: id, Region: "ca-central", SizeBytes: 1 << 30})
 			if err != nil || st.Handle != "volumes/"+id || st.Region != "" {
 				t.Fatalf("ensure %s: %+v %v", id, st, err)
 			}
@@ -140,7 +140,7 @@ func TestDeleteLeavesNothing(t *testing.T) {
 	cfg := testConfig(t)
 	p := New(cfg, newFakeRunner(), testSecrets)
 	for _, id := range []string{"u1/home", "u1/data"} {
-		if _, err := p.EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: id}); err != nil {
+		if _, err := p.EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: id, SizeBytes: 1 << 30}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -177,7 +177,7 @@ func TestControllerErrors(t *testing.T) {
 	}
 	cfg := testConfig(t)
 	cfg.Classes[0].Credentials.MetaPassword = "missing"
-	if _, err := New(cfg, run, testSecrets).EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: "u/x"}); err == nil || !strings.Contains(err.Error(), "credential missing") {
+	if _, err := New(cfg, run, testSecrets).EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: "u/x", SizeBytes: 1 << 30}); err == nil || !strings.Contains(err.Error(), "credential missing") {
 		t.Fatalf("a missing credential: %v", err)
 	}
 }
