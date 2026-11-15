@@ -39,6 +39,17 @@ of them. So a class is one trust domain: put on one class only silos whose hosts
 each other's data, and give tenants that must not share a host's reach classes of their own (each
 its own file system, metadata database and bucket credentials).
 
+One more limit, not yet tested on real machines (`juicefs/realhost_linux_test.go` checks it on a
+Linux host with `juicefs`; see [Test](#test)):
+
+- **JuiceFS's control file.** A silo's mount is a sub-folder of the class's file system, with
+  JuiceFS's own files (`.control` and the like) renamed `.jfs.*` and hidden from listings, but still
+  there by name. If the control file takes inode numbers, root in a silo may reach a sibling
+  volume's files through it.
+
+Until that is settled, don't put on a JuiceFS class data that one tenant must not read of
+another's.
+
 ## Configuration
 
 `--config FILE` (JSON, not secret: credentials are only named):
@@ -130,6 +141,14 @@ make test
 
 `juicefs` is faked; the plugin protocol's conformance suite (`kplugintest.Conformance`, from core)
 runs against both sides.
+
+On a Linux host with `juicefs` on PATH and `/dev/fuse`, as root, `juicefs/realhost_linux_test.go`
+runs the real command over a SQLite file and a local folder (no database server, no bucket) and
+checks what the fakes can't:
+
+```bash
+sudo KEVASO_JUICEFS_REAL=1 go test -count=1 -v -run TestRealHost ./juicefs/
+```
 
 On real machines, `test/e2e` (build tag `e2e`) runs the class end to end on Linodes: a backends
 Linode (Postgres for the metadata, SeaweedFS for the bucket, firewalled to the cluster), a control
