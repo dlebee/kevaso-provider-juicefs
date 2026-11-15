@@ -16,7 +16,7 @@ import (
 )
 
 // Tests on a real Linux host with the juicefs command, for the two audit findings the fakes can't
-// answer (K-052). No cloud and no database server: the file system's metadata is a SQLite
+// answer (K-052, K-053). No cloud and no database server: the file system's metadata is a SQLite
 // file and its data a local folder (juicefs's own sqlite3:// and --storage file). They need root,
 // /dev/fuse and juicefs (1.4 or later) on PATH, and run only with KEVASO_JUICEFS_REAL=1:
 //
@@ -81,6 +81,33 @@ func mount(t *testing.T, fs FS, dir string, o MountOptions) {
 	t.Cleanup(func() { _, _ = run("", "umount", "--force", dir) })
 }
 
+// mountForeground mounts fs at dir with the provider's arguments but in the foreground ("-d"
+// dropped), so the test holds the JuiceFS client's process: on a host, that client.
+func mountForeground(t *testing.T, fs FS, dir string, o MountOptions) *exec.Cmd {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var args []string
+	for _, a := range MountArgs(fs, dir, o) {
+		if a != "-d" {
+			args = append(args, a)
+		}
+	}
+	c := exec.Command("juicefs", args...)
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = c.Process.Signal(syscall.SIGCONT)
+		_, _ = run("", "umount", "--force", dir)
+		_ = c.Process.Kill()
+		_, _ = c.Process.Wait()
+	})
+	waitMounted(t, dir)
+	return c
+}
+
 func waitMounted(t *testing.T, dir string) {
 	t.Helper()
 	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
@@ -142,5 +169,58 @@ func TestRealHostControlFileDoesNotReachASiblingVolume(t *testing.T) {
 		t.Skipf("inconclusive: the command didn't reach the control file (output above)")
 	case err == nil:
 		t.Errorf("K-052: juicefs info --inode %s from volume a's mount succeeded; read its output above", ino)
+	}
+}
+
+// K-053 (suspected): the fence kills a silo's processes, not the host's JuiceFS client. Data the
+// silo wrote and the client had not committed is committed when that client runs again, possibly
+// after the silo started on another host and wrote there. Here one host's client is frozen
+// (SIGSTOP: it can do nothing, as when it can't reach the metadata) while its silo's writer is
+// killed (the fence); the volume is mounted on a second host, written and closed; then the first
+// client runs again. The test fails if the first host's late write ends up in the file. Not
+// covered: a real partition from a networked metadata database (a frozen client is the nearest
+// one host can do with SQLite), and a client that loses its session to the database's timeout
+// first, which is what JuiceFS's sessions are meant to catch.
+func TestRealHostNoLateWriteAfterAFence(t *testing.T) {
+	fs, root := realFS(t)
+	if err := os.MkdirAll(filepath.Join(root, "volumes/a/data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	h1, h2 := filepath.Join(dir, "host1"), filepath.Join(dir, "host2")
+	client1 := mountForeground(t, fs, h1, MountOptions{Subdir: "volumes/a/data", CacheDir: filepath.Join(dir, "cache1")})
+	mount(t, fs, h2, MountOptions{Subdir: "volumes/a/data", CacheDir: filepath.Join(dir, "cache2")})
+
+	// The silo on host 1 writes and keeps the file open (nothing synced).
+	writer := exec.Command("sh", "-c", `exec 3>"$1/db"; printf 'LATE-FROM-HOST-1' >&3; exec sleep 600`, "sh", h1)
+	if err := writer.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	// Host 1 is cut off (its client frozen), and its silo fenced (killed).
+	if err := client1.Process.Signal(syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	_ = writer.Process.Kill()
+	go func() { _, _ = writer.Process.Wait() }() // its close may wait on the frozen client
+
+	// The silo starts on host 2 and writes the file.
+	if err := os.WriteFile(filepath.Join(h2, "db"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(h2, "db")); err != nil || string(b) != "new" {
+		t.Fatalf("host 2's write: %q %v", b, err)
+	}
+	// Host 1 comes back.
+	if err := client1.Process.Signal(syscall.SIGCONT); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Second)
+	_, _ = run("", "umount", h1)
+	time.Sleep(2 * time.Second) // past the second host's attribute cache
+	b, err := os.ReadFile(filepath.Join(root, "volumes/a/data/db"))
+	t.Logf("the file after host 1 came back: %q %v", b, err)
+	if strings.Contains(string(b), "LATE") {
+		t.Errorf("K-053: host 1's write from before the fence landed after host 2's: %q", b)
 	}
 }

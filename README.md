@@ -39,16 +39,19 @@ of them. So a class is one trust domain: put on one class only silos whose hosts
 each other's data, and give tenants that must not share a host's reach classes of their own (each
 its own file system, metadata database and bucket credentials).
 
-One more limit, not yet tested on real machines (`juicefs/realhost_linux_test.go` checks it on a
-Linux host with `juicefs`; see [Test](#test)):
+Two more limits, not yet tested on real machines (`juicefs/realhost_linux_test.go` checks them on
+a Linux host with `juicefs`; see [Test](#test)):
 
 - **JuiceFS's control file.** A silo's mount is a sub-folder of the class's file system, with
   JuiceFS's own files (`.control` and the like) renamed `.jfs.*` and hidden from listings, but still
   there by name. If the control file takes inode numbers, root in a silo may reach a sibling
   volume's files through it.
+- **Late writes after a fence.** When a host is cut off and its silo is fenced, the silo's processes
+  are killed, not the host's JuiceFS client: what it had written and not yet committed may be
+  committed when that host's client runs again, after the silo started elsewhere and wrote there.
 
-Until that is settled, don't put on a JuiceFS class data that one tenant must not read of
-another's.
+Until those are settled, don't put on a JuiceFS class data that one tenant must not read of
+another's, or that must not take a stale write after a move.
 
 ## Configuration
 
