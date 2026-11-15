@@ -48,6 +48,7 @@ const (
 	juicefsVersion = "1.4.2"
 	seaweedVersion = "4.53"
 	unit           = "kevaso-plugin-juicefs"
+	nodeUnit       = "kevaso-plugin-juicefs-node"
 	ns             = "e2e"
 )
 
@@ -133,7 +134,7 @@ func TestJuiceFS(t *testing.T) {
 	db, cp, w1, w2 := ms["db"], ms["cp"], ms["w1"], ms["w2"]
 	workers := map[string]linodetest.Machine{"w1": w1, "w2": w2}
 	t.Cleanup(func() {
-		cl.diagnose(map[string]linodetest.Machine{"cp": cp, "w1": w1, "w2": w2}, unit)
+		cl.diagnose(map[string]linodetest.Machine{"cp": cp, "w1": w1, "w2": w2}, unit, nodeUnit)
 		if t.Failed() {
 			out, _ := b.SSH(context.Background(), db, "systemctl --no-pager status postgresql@16-main kvt-weed | head -20; journalctl -u kvt-weed -n 20 --no-pager")
 			t.Logf("── db ──\n%s", out)
@@ -200,23 +201,40 @@ func TestJuiceFS(t *testing.T) {
 	cfg := fmt.Sprintf(`{"classes": [{"name": "juicefs", "metadata": %q, "bucket": %q,
   "credentials": {"accessKey": "s3-access-key", "secretKey": "s3-secret-key", "metaPassword": "meta-password"}}]}`, meta, bucket)
 	_ = os.WriteFile(cfgFile, []byte(cfg), 0o644)
+	secretNames := []string{"s3-access-key", "s3-secret-key", "meta-password"}
 	installArgs := []string{"--name", "juicefs", "--binary", plugin, "--manifest", manifest, "--config", cfgFile}
-	for n := range cred {
-		installArgs = append(installArgs, "--credential", n+"="+filepath.Join(creds, n))
+	for _, n := range secretNames {
+		installArgs = append(installArgs, "--cluster-secret", n)
 	}
 	if out, err := cl.c.Kvoadm(append(append([]string{"plugin", "install", "root@" + w1.Public, "--side", "node"}, installArgs...), b.SSHFlags()...)...); err == nil || !strings.Contains(out, "--yes") {
 		t.Fatalf("install without --yes: want a refusal naming --yes, got %v:\n%s", err, out)
 	}
-	if out, _ := b.SSH(ctx, w1, "test -e /etc/systemd/system/"+unit+".service && echo there"); strings.Contains(out, "there") {
+	if out, _ := b.SSH(ctx, w1, "test -e /etc/systemd/system/"+nodeUnit+".service && echo there"); strings.Contains(out, "there") {
 		t.Fatal("refused install left a unit behind")
 	}
+	for _, n := range secretNames {
+		kvo("create", "clustersecret", n, "--from-file", filepath.Join(creds, n))
+	}
+	cl.c.MustKvo(grantClusterSecrets("juicefs", secretNames...), "apply", "-f", "-")
 	cl.pluginInstall(cp, append(installArgs, "--yes")...)
 	for _, w := range []linodetest.Machine{w1, w2} {
 		cl.pluginInstall(w, append(installArgs, "--side", "node", "--yes")...)
 	}
-	props := "systemctl show " + unit + " -p DynamicUser,User,CapabilityBoundingSet,AmbientCapabilities,DevicePolicy,DeviceAllow,KillMode,ProtectSystem,ReadWritePaths,NoNewPrivileges,ActiveState"
-	nodeProps := cl.mustSSH(ctx, w1, props)
-	ctlProps := cl.mustSSH(ctx, cp, props)
+	linodetest.Eventually(t, "juicefs controller active", 2*time.Minute, func() (bool, string) {
+		out, err := b.SSH(ctx, cp, "systemctl is-active "+unit)
+		return strings.TrimSpace(out) == "active", fmt.Sprintf("%q %v", strings.TrimSpace(out), err)
+	})
+	for _, w := range []linodetest.Machine{w1, w2} {
+		linodetest.Eventually(t, "juicefs node side active on "+w.Label, 2*time.Minute, func() (bool, string) {
+			out, err := b.SSH(ctx, w, "systemctl is-active "+nodeUnit)
+			return strings.TrimSpace(out) == "active", fmt.Sprintf("%q %v", strings.TrimSpace(out), err)
+		})
+	}
+	show := func(u string) string {
+		return "systemctl show " + u + " -p DynamicUser,User,CapabilityBoundingSet,AmbientCapabilities,DevicePolicy,DeviceAllow,KillMode,ProtectSystem,ReadWritePaths,NoNewPrivileges,ActiveState"
+	}
+	nodeProps := cl.mustSSH(ctx, w1, show(nodeUnit))
+	ctlProps := cl.mustSSH(ctx, cp, show(unit))
 	for _, want := range []string{"DynamicUser=no", "CapabilityBoundingSet=cap_sys_admin\n", "DevicePolicy=closed", "/dev/fuse rw", "KillMode=process", "ProtectSystem=no", "NoNewPrivileges=yes", "ActiveState=active"} {
 		if !strings.Contains(nodeProps+"\n", want) {
 			t.Errorf("node side's unit: no %q in\n%s", want, nodeProps)
@@ -227,15 +245,17 @@ func TestJuiceFS(t *testing.T) {
 			t.Errorf("controller side's unit: no %q in\n%s", want, ctlProps)
 		}
 	}
-	nsOf := "readlink /proc/1/ns/mnt /proc/$(systemctl show -p MainPID --value " + unit + ")/ns/mnt"
-	if l := strings.Fields(cl.mustSSH(ctx, w1, nsOf)); len(l) != 2 || l[0] != l[1] {
+	nsOf := func(u string) string {
+		return "readlink /proc/1/ns/mnt /proc/$(systemctl show -p MainPID --value " + u + ")/ns/mnt"
+	}
+	if l := strings.Fields(cl.mustSSH(ctx, w1, nsOf(nodeUnit))); len(l) != 2 || l[0] != l[1] {
 		t.Errorf("node side's mount namespace isn't the host's: %v", l)
 	}
-	if l := strings.Fields(cl.mustSSH(ctx, cp, nsOf)); len(l) != 2 || l[0] == l[1] {
+	if l := strings.Fields(cl.mustSSH(ctx, cp, nsOf(unit))); len(l) != 2 || l[0] == l[1] {
 		t.Errorf("controller side shares the host's mount namespace: %v", l)
 	}
 	// The node side's effective capabilities: CAP_SYS_ADMIN (bit 21) only.
-	if out := cl.mustSSH(ctx, w1, "grep CapEff /proc/$(systemctl show -p MainPID --value "+unit+")/status"); !strings.Contains(out, "0000000000200000") {
+	if out := cl.mustSSH(ctx, w1, "grep CapEff /proc/$(systemctl show -p MainPID --value "+nodeUnit+")/status"); !strings.Contains(out, "0000000000200000") {
 		t.Errorf("node side's CapEff: %q, want CAP_SYS_ADMIN only", out)
 	}
 	if t.Failed() {
@@ -353,7 +373,7 @@ spec:
 	// 2 (cont.). The node side's mounts survive a restart of the plugin.
 	count := "grep -c fuse.juicefs /proc/self/mountinfo"
 	n0 := strings.TrimSpace(cl.mustSSH(ctx, host, count))
-	cl.mustSSH(ctx, host, "systemctl restart "+unit+" && sleep 3 && systemctl is-active "+unit)
+	cl.mustSSH(ctx, host, "systemctl restart "+nodeUnit+" && sleep 3 && systemctl is-active "+nodeUnit)
 	if n1 := strings.TrimSpace(cl.mustSSH(ctx, host, count)); n1 != n0 {
 		t.Fatalf("juicefs mounts on %s: %s before restarting the node side, %s after", s.Status.Host, n0, n1)
 	}
@@ -405,7 +425,7 @@ spec:
 		return s.Status.Host == to && s.mounted(), fmt.Sprintf("%+v", s.Status)
 	})
 	when := func(m linodetest.Machine, what string) float64 {
-		out := cl.mustSSH(ctx, m, "journalctl -u "+unit+" -o short-unix --no-pager | grep -F '"+what+"' | tail -1")
+		out := cl.mustSSH(ctx, m, "journalctl -u "+nodeUnit+" -o short-unix --no-pager | grep -F '"+what+"' | tail -1")
 		f, _ := strconv.ParseFloat(firstWord(out), 64)
 		return f
 	}
@@ -452,7 +472,7 @@ spec:
 	// The lost host comes back: it must not mount the volume again.
 	b.PowerOn(ctx, workers[lost])
 	linodetest.Eventually(t, lost+" back", 8*time.Minute, func() (bool, string) {
-		out, err := b.SSH(ctx, workers[lost], "systemctl is-active kevasod "+unit)
+		out, err := b.SSH(ctx, workers[lost], "systemctl is-active kevasod "+nodeUnit)
 		return err == nil, out
 	})
 	time.Sleep(20 * time.Second)
@@ -815,6 +835,25 @@ type harness struct {
 	kit     *linodetest.Kit
 	c       *linodetest.Cluster
 	kevasod string
+}
+
+// grantClusterSecrets is what a host needs before it will fetch names for plugin: a cluster
+// role pinned to those names, bound to service account plugin-NAME in kevaso-system.
+// Install creates the account.
+func grantClusterSecrets(plugin string, names ...string) string {
+	return fmt.Sprintf(`apiVersion: kevaso/v1
+kind: ClusterRole
+metadata: { name: %[1]s-secrets }
+rules:
+  - { verbs: [get], resources: [clustersecrets/value], resourceNames: [%[2]s] }
+---
+apiVersion: kevaso/v1
+kind: ClusterRoleBinding
+metadata: { name: %[1]s-secrets }
+roleRef: { kind: ClusterRole, name: %[1]s-secrets }
+subjects:
+  - { kind: ServiceAccount, name: plugin-%[1]s, namespace: kevaso-system }
+`, plugin, strings.Join(names, ", "))
 }
 
 func newHarness(ctx context.Context, t *testing.T, b *linodetest.Bed) *harness {

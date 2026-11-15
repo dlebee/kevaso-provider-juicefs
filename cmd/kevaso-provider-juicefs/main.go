@@ -95,7 +95,7 @@ func credential(name string) (string, error) {
 		dir = os.Getenv("KEVASO_JUICEFS_CREDENTIALS_DIR")
 	}
 	if dir == "" {
-		return "", errors.New("no credentials: run under systemd with LoadCredential=NAME:FILE (kvoadm plugin install --credential NAME=FILE)")
+		return "", errors.New("no credentials: run under systemd with LoadCredential=NAME:FILE (kvoadm plugin install --cluster-secret NAME)")
 	}
 	b, err := os.ReadFile(filepath.Join(dir, name))
 	if err != nil {
