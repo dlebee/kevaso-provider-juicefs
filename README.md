@@ -112,7 +112,7 @@ package says exactly what, in [`kevaso-plugin.json`](kevaso-plugin.json); `kvoad
 The node side's unit keeps `KillMode=process`, so restarting the plugin doesn't kill the `juicefs`
 daemons serving silos' volumes (it finds its mounts again in the host's mount table).
 
-Create the three cluster secrets, then allow exactly those names. The binding names service account `plugin-juicefs` in the namespace `kevaso-system`. A host fetches a value for this plugin only when that account may read the name.
+Create the three cluster secrets, then allow exactly those names. Save the binding below as `juicefs-secrets.yaml`. `resourceNames` lists exactly these three. Both sides need all three, so the binding names both service accounts in the namespace `kevaso-system`: `plugin-juicefs` for the controller side and `plugin-juicefs-node` for the node side. A host fetches a value for a side only when that side's account may read the name.
 
 ```bash
 kvo create clustersecret bucket-access-key --from-file bucket-access-key.txt
@@ -143,6 +143,7 @@ metadata: { name: juicefs-secrets }
 roleRef: { kind: ClusterRole, name: juicefs-secrets }
 subjects:
   - { kind: ServiceAccount, name: plugin-juicefs, namespace: kevaso-system }
+  - { kind: ServiceAccount, name: plugin-juicefs-node, namespace: kevaso-system }
 ```
 
 ```bash
@@ -172,7 +173,7 @@ kvoadm plugin install root@hv-1 \
     --cluster-secret metadata-password
 ```
 
-Install creates the service account `plugin-juicefs` in the namespace `kevaso-system` and prints the account to bind. It records the names. Each host fetches the values and keeps copies only root can read. The plugin reads each name from its credential directory.
+Install creates the service account of the side it installs (`plugin-juicefs`, or `plugin-juicefs-node` with `--side node`) in the namespace `kevaso-system` and prints the account to bind. It records the names. It does not copy the files. Each host fetches the values and keeps copies only root can read. The plugin reads each name from its credential directory.
 
 To replace a value:
 

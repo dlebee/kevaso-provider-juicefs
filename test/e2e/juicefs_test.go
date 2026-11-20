@@ -862,9 +862,10 @@ type harness struct {
 	kevasod string
 }
 
-// grantClusterSecrets is what a host needs before it will fetch names for plugin: a cluster
-// role pinned to those names, bound to service account plugin-NAME in kevaso-system.
-// Install creates the account.
+// grantClusterSecrets is what a host needs before it will fetch names for a plugin: a cluster
+// role pinned to those names, bound to both service accounts in kevaso-system. Install creates
+// plugin-NAME for the controller side and plugin-NAME-node for the node side. A host fetches a
+// value for a side only when that side's account may read the name.
 func grantClusterSecrets(plugin string, names ...string) string {
 	return fmt.Sprintf(`apiVersion: kevaso/v1
 kind: ClusterRole
@@ -878,6 +879,7 @@ metadata: { name: %[1]s-secrets }
 roleRef: { kind: ClusterRole, name: %[1]s-secrets }
 subjects:
   - { kind: ServiceAccount, name: plugin-%[1]s, namespace: kevaso-system }
+  - { kind: ServiceAccount, name: plugin-%[1]s-node, namespace: kevaso-system }
 `, plugin, strings.Join(names, ", "))
 }
 
