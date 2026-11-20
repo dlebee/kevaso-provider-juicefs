@@ -160,7 +160,10 @@ func TestJuiceFS(t *testing.T) {
 	bucket := "http://" + db.Private + ":8333/jfs"
 	// Not reachable from the internet (this machine), only from the cluster's private addresses;
 	// and the bucket refuses anonymous requests even from there.
-	for _, port := range []string{"5432", "8333", "8888", "9333"} {
+	// Postgres is 5432. `weed server -s3 -s3.port=8333` (no other port flags) listens on the
+	// volume server's 8080, the filer's 8888 and the master's 9333, each with its gRPC port
+	// 10000 higher (18080, 18888, 19333), on S3's 8333 and its gRPC 18333, and on 8181 and 9101.
+	for _, port := range []string{"5432", "8080", "8181", "8333", "8888", "9101", "9333", "18080", "18333", "18888", "19333"} {
 		if c, err := net.DialTimeout("tcp", db.Public+":"+port, 5*time.Second); err == nil {
 			_ = c.Close()
 			t.Fatalf("the backends' port %s answers on the public address", port)
