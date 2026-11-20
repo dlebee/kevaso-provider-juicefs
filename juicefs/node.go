@@ -91,6 +91,10 @@ func (n *Node) MountVolume(ctx context.Context, m kplugin.NodeMount) error {
 	if err != nil {
 		return err
 	}
+	// The mount point, and the silo's folder above it. The VMM does not walk these.
+	// Its unit hides /var/lib/kevaso behind a tmpfs and bind-mounts only this path,
+	// and once juicefs is mounted the mode of that path is the volume folder's in
+	// the file system (volumeDirMode), which is what kevaso-vmm traverses.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
