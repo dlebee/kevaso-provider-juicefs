@@ -217,8 +217,8 @@ sudo KEVASO_JUICEFS_REAL=1 go test -count=1 -v -run TestRealHost ./juicefs/
 
 On real machines, `test/e2e` (build tag `e2e`) runs the class end to end on Linodes: a backends
 Linode (Postgres for the metadata, SeaweedFS for the bucket, firewalled to the cluster), a control
-plane and two docker workers, then a silo's volume formatted, mounted, sized, moved, moved again
-when its host is powered off, cut off from its database, and deleted. It costs money and needs a
+plane and two docker workers, then a silo's volume formatted, mounted, sized, moved, and after
+its host is powered off moved by a person, cut off from its database, and deleted. It costs money and needs a
 Linode API token; its machines and sweeps are the Linode provider's (`linodetest`), so it builds in a
 workspace with that provider next to this one (`bash core/hack/workspace.sh`).
 
