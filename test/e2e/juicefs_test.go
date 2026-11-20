@@ -4,7 +4,7 @@
 // Postgres metadata database and a SeaweedFS bucket, reachable from the cluster's machines only),
 // one is the control plane and two are docker workers. Both sides of the plugin are installed with
 // kvoadm and the package's manifest, and a container silo with a juicefs volume is formatted,
-// mounted, sized, moved, moved again when its host is powered off, cut off from its metadata
+// mounted, sized, moved, and after its host is powered off moved by hand, cut off from its metadata
 // database, and deleted.
 //
 // It costs money and needs a token, so it only runs when asked:
@@ -160,7 +160,10 @@ func TestJuiceFS(t *testing.T) {
 	bucket := "http://" + db.Private + ":8333/jfs"
 	// Not reachable from the internet (this machine), only from the cluster's private addresses;
 	// and the bucket refuses anonymous requests even from there.
-	for _, port := range []string{"5432", "8333", "8888", "9333"} {
+	// Postgres is 5432. `weed server -s3 -s3.port=8333` (no other port flags) listens on the
+	// volume server's 8080, the filer's 8888 and the master's 9333, each with its gRPC port
+	// 10000 higher (18080, 18888, 19333), on S3's 8333 and its gRPC 18333, and on 8181 and 9101.
+	for _, port := range []string{"5432", "8080", "8181", "8333", "8888", "9101", "9333", "18080", "18333", "18888", "19333"} {
 		if c, err := net.DialTimeout("tcp", db.Public+":"+port, 5*time.Second); err == nil {
 			_ = c.Close()
 			t.Fatalf("the backends' port %s answers on the public address", port)
@@ -303,7 +306,7 @@ spec:
     image: docker.io/library/alpine:3.20
     command: [sh, -c, "trap 'exit 0' TERM; while :; do sleep 3600 & wait; done"]
   resources: { cpu: 1, memory: 256Mi }
-  availability: { onHostLoss: Move }
+  availability: { onHostLoss: Recreate }
   volumes:
     - { name: data, class: juicefs, size: `+size+`, mountPath: /data }
 `, "apply", "-f", "-")
@@ -413,13 +416,15 @@ spec:
 	report("4", "1Gi: %s; dd of 1300 MiB refused (%s); size → 2Gi grew the quota with the same container running, and the same dd fit (status sizeBytes %d)",
 		firstLine(grepLine(q1, "GiB")), lastLines(fill, 1), s.Status.Volumes[0].SizeBytes)
 
-	// 5a. kvo move to the other worker: the old host unmounts before the new one mounts.
+	// 5a. A container's own files are not kept, so a plain move is refused. --recreate (the silo
+	// is onHostLoss: Recreate) starts a fresh container; the juicefs volume still moves, and the
+	// old host unmounts it before the new one mounts.
 	from := s.Status.Host
 	to := map[string]string{"w1": "w2", "w2": "w1"}[from]
 	if s.Status.Movable != "Anywhere" {
 		t.Errorf("status.movable: %q, want Anywhere", s.Status.Movable)
 	}
-	t.Log(kvo("move", "silo", "data", "-n", ns, "--to", to))
+	t.Log(kvo("move", "silo", "data", "-n", ns, "--to", to, "--recreate"))
 	linodetest.Eventually(t, "data running on "+to, 8*time.Minute, func() (bool, string) {
 		s = get("data")
 		return s.Status.Host == to && s.mounted(), fmt.Sprintf("%+v", s.Status)
@@ -440,34 +445,56 @@ spec:
 	if out := kvo("exec", "silo", "data", "-n", ns, "--", "sh", "-c", "cat /data/probe; md5sum -c /data/blob.md5"); !strings.Contains(out, "hello from the silo") || !strings.Contains(out, "OK") {
 		t.Fatalf("files after the move: %q", out)
 	}
-	report("5", "kvo move %s → %s: %s unmounted %.1fs before %s mounted; probe and blob checksum there; status.movable %s",
+	report("5", "kvo move --recreate %s → %s: %s unmounted %.1fs before %s mounted; probe and blob checksum there; status.movable %s",
 		from, to, from, mounted-unmounted, to, s.Status.Movable)
 
-	// 5b. onHostLoss: Move: the silo's host is powered off; after fencing it comes up on the other one.
+	// 5b. The host is powered off. It cannot report that its copy stopped, so nothing moves the
+	// silo. Once the host is lost, a person runs kvo move --confirm-fenced --recreate (the root
+	// is the container's own files, which are host-local; the juicefs volume comes along).
 	lost := s.Status.Host
 	other := map[string]string{"w1": "w2", "w2": "w1"}[lost]
-	off := time.Now()
 	b.PowerOff(ctx, workers[lost])
 	t.Logf("%s powered off", lost)
-	fencing := false
-	linodetest.Eventually(t, "data moved to "+other+" after losing "+lost, 10*time.Minute, func() (bool, string) {
+	linodetest.Eventually(t, lost+" lost, data still on it", 3*time.Minute, func() (bool, string) {
 		s = get("data")
-		c := s.cond("HostLost")
-		fencing = fencing || c.Reason == "Fencing"
-		return s.Status.Host == other && s.mounted(), fmt.Sprintf("%s HostLost=%+v", s.Status.Phase, c)
+		if s.Status.Host != "" && s.Status.Host != lost {
+			t.Fatalf("data moved to %s by itself after %s was powered off", s.Status.Host, lost)
+		}
+		var h struct {
+			Status struct {
+				Conditions []condition `json:"conditions"`
+			} `json:"status"`
+		}
+		if !cl.get(&h, "host", lost, "") {
+			return false, "host " + lost + " not readable"
+		}
+		var ready condition
+		for _, c := range h.Status.Conditions {
+			if c.Type == "Ready" {
+				ready = c
+			}
+		}
+		u := s.cond("HostUnreachable")
+		hostLost := ready.Status == "Unknown" && ready.Reason == "HostLost"
+		waiting := s.Status.Host == lost && s.Status.Phase == "Unknown" && u.Status == "True" && u.Reason == "Waiting"
+		return hostLost && waiting, fmt.Sprintf("host Ready=%s/%s phase=%s host=%s HostUnreachable=%+v", ready.Status, ready.Reason, s.Status.Phase, s.Status.Host, u)
 	})
-	took := time.Since(off).Round(time.Second)
-	if c := s.cond("HostLost"); c.Reason != "Moved" {
-		t.Errorf("HostLost condition after the move: %+v", c)
+	if s.Status.Host != lost {
+		t.Fatalf("data is on %s, want it still on lost %s", s.Status.Host, lost)
 	}
-	if !fencing {
-		t.Log("(the Fencing phase wasn't caught between polls)")
+	if c := s.cond("HostLost"); c.Type != "" {
+		t.Errorf("the silo still has a HostLost condition: %+v", c)
 	}
-	if took < 40*time.Second {
-		t.Errorf("moved %s after the host went down: before its lease could run out", took)
+	if msg := s.cond("HostUnreachable").Message; !strings.Contains(msg, "--confirm-fenced") || !strings.Contains(msg, "--recreate") {
+		t.Errorf("HostUnreachable doesn't name the confirmed recreate: %q", msg)
 	}
-	if out := kvo("exec", "silo", "data", "-n", ns, "--", "sh", "-c", "cat /data/probe; md5sum -c /data/blob.md5"); !strings.Contains(out, "OK") {
-		t.Fatalf("files after the host loss: %q", out)
+	t.Log(kvo("move", "silo", "data", "-n", ns, "--to", other, "--confirm-fenced", "--recreate"))
+	linodetest.Eventually(t, "data running on "+other, 10*time.Minute, func() (bool, string) {
+		s = get("data")
+		return s.Status.Host == other && s.mounted(), fmt.Sprintf("%+v", s.Status)
+	})
+	if out := kvo("exec", "silo", "data", "-n", ns, "--", "sh", "-c", "cat /data/probe; md5sum -c /data/blob.md5"); !strings.Contains(out, "hello from the silo") || !strings.Contains(out, "OK") {
+		t.Fatalf("files after the confirmed move: %q", out)
 	}
 	// The lost host comes back: it must not mount the volume again.
 	b.PowerOn(ctx, workers[lost])
@@ -479,8 +506,9 @@ spec:
 	if out, _ := b.SSH(ctx, workers[lost], "findmnt -n "+vol+"; docker ps -q --filter label=kevaso.com/name=data"); strings.TrimSpace(out) != "" {
 		t.Errorf("%s came back and runs or mounts data again: %q", lost, out)
 	}
-	report("5", "onHostLoss: Move: %s powered off through the API, HostLost went Fencing → Moved, data running on %s with its files %s later; "+
-		"%s came back with neither the mount nor the container", lost, other, took, lost)
+	report("5", "%s powered off: it was lost and data stayed there (HostUnreachable Waiting, no move of its own); "+
+		"kvo move --confirm-fenced --recreate brought it up on %s with its files; %s came back with neither the mount nor the container",
+		lost, other, lost)
 
 	// 6. Two silos sharing one volume.
 	t.Log("STEP 6 SKIP: the API has no accessMode (api/v1 Volume has name, class, size, mountPath): a volume belongs to one silo")
@@ -837,9 +865,10 @@ type harness struct {
 	kevasod string
 }
 
-// grantClusterSecrets is what a host needs before it will fetch names for plugin: a cluster
-// role pinned to those names, bound to service account plugin-NAME in kevaso-system.
-// Install creates the account.
+// grantClusterSecrets is what a host needs before it will fetch names for a plugin: a cluster
+// role pinned to those names, bound to both service accounts in kevaso-system. Install creates
+// plugin-NAME for the controller side and plugin-NAME-node for the node side. A host fetches a
+// value for a side only when that side's account may read the name.
 func grantClusterSecrets(plugin string, names ...string) string {
 	return fmt.Sprintf(`apiVersion: kevaso/v1
 kind: ClusterRole
@@ -853,6 +882,7 @@ metadata: { name: %[1]s-secrets }
 roleRef: { kind: ClusterRole, name: %[1]s-secrets }
 subjects:
   - { kind: ServiceAccount, name: plugin-%[1]s, namespace: kevaso-system }
+  - { kind: ServiceAccount, name: plugin-%[1]s-node, namespace: kevaso-system }
 `, plugin, strings.Join(names, ", "))
 }
 

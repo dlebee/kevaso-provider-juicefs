@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"kevaso.com/core/sdk/kplugin"
@@ -91,6 +92,68 @@ func TestHandleFor(t *testing.T) {
 			t.Errorf("%q: %q %v, want %q", id, got, err, want)
 		}
 	}
+}
+
+// The plugin unit runs with UMask=0077. A volume's new folders still end at volumeDirMode,
+// which is what lets kevaso-vmm traverse in and open root.raw. A folder that was already
+// there keeps the mode it had.
+func TestVolumePathModeIgnoresUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+
+	ctx := context.Background()
+	modeOf := func(t *testing.T, path string) os.FileMode {
+		t.Helper()
+		fi, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		return fi.Mode().Perm()
+	}
+
+	t.Run("every level it creates", func(t *testing.T) {
+		cfg := testConfig(t)
+		p := New(cfg, newFakeRunner(), testSecrets)
+		if _, err := p.EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: "u1/disk.root", SizeBytes: 1 << 30}); err != nil {
+			t.Fatal(err)
+		}
+		base := filepath.Join(cfg.StateDir, "mnt", "juicefs")
+		for _, dir := range []string{
+			filepath.Join(base, "volumes"),
+			filepath.Join(base, "volumes", "u1"),
+			filepath.Join(base, "volumes", "u1", "disk.root"),
+		} {
+			if got := modeOf(t, dir); got != volumeDirMode {
+				t.Fatalf("%s is %o, want %o", dir, got, volumeDirMode)
+			}
+		}
+	})
+
+	t.Run("an existing folder is left alone", func(t *testing.T) {
+		cfg := testConfig(t)
+		p := New(cfg, newFakeRunner(), testSecrets)
+		pre := filepath.Join(cfg.StateDir, "mnt", "juicefs", "volumes")
+		if err := os.MkdirAll(pre, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(pre, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: "u1/disk.root", SizeBytes: 1 << 30}); err != nil {
+			t.Fatal(err)
+		}
+		if got := modeOf(t, pre); got != 0o750 {
+			t.Fatalf("volumes was %o, want 750", got)
+		}
+		for _, dir := range []string{
+			filepath.Join(pre, "u1"),
+			filepath.Join(pre, "u1", "disk.root"),
+		} {
+			if got := modeOf(t, dir); got != volumeDirMode {
+				t.Fatalf("%s is %o, want %o", dir, got, volumeDirMode)
+			}
+		}
+	})
 }
 
 // The file system is formatted once, only when it never was; credentials go in the environment.

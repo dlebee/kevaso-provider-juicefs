@@ -171,7 +171,58 @@ func fsOf(cl Class, secrets Secrets) (FS, error) {
 	return fs, nil
 }
 
+// volumeDirMode is the mode of every folder created for a volume's path. Traverse
+// for anyone, so kevaso-vmm can open a file it owns inside; no read or write for
+// anyone but the owner (root).
+const volumeDirMode os.FileMode = 0o711
+
 var idPart = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// mkdirAllMode creates path and any missing parent, and sets mode on each folder it
+// creates. A folder that already exists is left as it is, mode included. mode is the
+// mode the folder ends with: os.Mkdir applies the process umask, and the plugin unit
+// runs with UMask=0077.
+func mkdirAllMode(path string, mode os.FileMode) error {
+	path = filepath.Clean(path)
+	var missing []string
+	for cur := path; ; {
+		fi, err := os.Lstat(cur)
+		if err == nil {
+			if !fi.IsDir() {
+				return fmt.Errorf("%s exists and is not a directory", cur)
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		missing = append(missing, cur)
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+		cur = parent
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		if err := os.Mkdir(missing[i], mode); err != nil {
+			if !errors.Is(err, os.ErrExist) {
+				return err
+			}
+			fi, statErr := os.Lstat(missing[i])
+			if statErr != nil {
+				return statErr
+			}
+			if !fi.IsDir() {
+				return fmt.Errorf("%s exists and is not a directory", missing[i])
+			}
+			continue // whoever created it sets its mode
+		}
+		if err := os.Chmod(missing[i], mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // HandleFor is a volume's folder in its class's file system, from the ID kevasod picks (the silo's
 // UID and the volume's name): volumes/UID/NAME.
@@ -346,7 +397,15 @@ func (p *Provider) EnsureVolume(ctx context.Context, v kplugin.Volume) (kplugin.
 	if busy {
 		return kplugin.VolumeStatus{}, fmt.Errorf("volume %s is being deleted: %w", h, kplugin.ErrInProgress)
 	}
-	if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(h)), 0o755); err != nil {
+	// Each new folder of the volume's path, and not a folder that was already there.
+	// The cloud-hypervisor VMM runs as kevaso-vmm and opens disk.root/root.raw by that
+	// name. The file is 0600, owned by kevaso-vmm; the folder is root's, and kevaso-vmm
+	// is neither the owner nor the group, so it needs the other-execute bit to walk in
+	// and nothing more (it does not list the folder, and root writes the image before
+	// the VMM starts). 0711 is that. The plugin unit's UMask=0077 would turn a plain
+	// mkdir of 0711 into 0700, which is the Permission denied on root.raw, so the mode
+	// is set again after the folder is created.
+	if err := mkdirAllMode(filepath.Join(root, filepath.FromSlash(h)), volumeDirMode); err != nil {
 		return kplugin.VolumeStatus{}, err
 	}
 	// Global: no region. The size is a directory quota on the volume's folder, in whole GiB
