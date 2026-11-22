@@ -224,3 +224,53 @@ func TestRealHostNoLateWriteAfterAFence(t *testing.T) {
 		t.Errorf("K-053: host 1's write from before the fence landed after host 2's: %q", b)
 	}
 }
+
+// TestRealHostUmountOutsideFusermountsPaths: a volume's mount point is under /var/lib/kevaso,
+// where Ubuntu's fusermount3 AppArmor profile refuses to unmount. The node side's Umount must
+// still unmount it, and the JuiceFS client must exit with it.
+func TestRealHostUmountOutsideFusermountsPaths(t *testing.T) {
+	fs, _ := realFS(t)
+	base, err := os.MkdirTemp("/var/lib", "kevaso-test-umount-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	dir := filepath.Join(base, "volumes", "u1", "data")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	juicefs(t, "", MountArgs(fs, dir, MountOptions{CacheDir: filepath.Join(base, "cache"), Log: filepath.Join(base, "vol.log")})...)
+	waitMounted(t, dir)
+	t.Cleanup(func() { _ = syscall.Unmount(dir, syscall.MNT_DETACH) })
+	if err := os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// For the record: what fusermount does here on this host (refused where the profile is enforced).
+	if out, err := run("", "umount", dir); err != nil {
+		t.Logf("juicefs umount (fusermount) at %s: refused: %v: %s", dir, err, lastLines([]byte(out), 2))
+	} else {
+		t.Logf("juicefs umount (fusermount) at %s: allowed on this host (no enforcing AppArmor profile); mounting again", dir)
+		juicefs(t, "", MountArgs(fs, dir, MountOptions{CacheDir: filepath.Join(base, "cache"), Log: filepath.Join(base, "vol.log")})...)
+		waitMounted(t, dir)
+	}
+
+	if err := (Exec{}).Umount(context.Background(), dir); err != nil {
+		t.Fatalf("Umount: %v", err)
+	}
+	if m, err := (Exec{}).Mounted(dir); err != nil || m {
+		t.Fatalf("still mounted after Umount: %v %v", m, err)
+	}
+	// The client for that mount point exits once its mount is gone.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		out, _ := exec.Command("pgrep", "-f", "juicefs mount .* "+dir).Output()
+		if strings.TrimSpace(string(out)) == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the JuiceFS client for %s still runs after the unmount: %s", dir, out)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
