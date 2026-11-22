@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // FS is one JuiceFS file system as the juicefs command needs it: where its metadata and data are,
@@ -44,7 +45,7 @@ type Runner interface {
 	Format(ctx context.Context, fs FS) error
 	// Mount mounts it at dir, in the background (juicefs mount -d).
 	Mount(ctx context.Context, fs FS, dir string, o MountOptions) error
-	// Umount unmounts what is at dir (juicefs umount).
+	// Umount unmounts what is at dir (umount(2), as root; not fusermount).
 	Umount(ctx context.Context, dir string) error
 	// Mounted reports whether a JuiceFS mount is at dir.
 	Mounted(dir string) (bool, error)
@@ -61,6 +62,8 @@ type Exec struct {
 	MountInfo string
 	// Command runs one command and returns its combined output (default: os/exec); tests replace it.
 	Command func(ctx context.Context, name string, args, env []string) (out []byte, code int, err error)
+	// Unmount unmounts one mount point (default: umount(2) with no flags); tests replace it.
+	Unmount func(dir string) error
 }
 
 func (e Exec) run(ctx context.Context, env []string, args ...string) ([]byte, int, error) {
@@ -170,10 +173,24 @@ func QuotaArgs(fs FS, dir string, capacityGiB int64) []string {
 	return []string{"quota", "set", fs.Metadata, "--path", dir, "--capacity", strconv.FormatInt(capacityGiB, 10)}
 }
 
-// Umount implements Runner.
+// Umount implements Runner. It unmounts with umount(2), as root, not with juicefs umount: that
+// runs fusermount, and Ubuntu's fuse3 confines fusermount with an AppArmor profile that only lets
+// it unmount under home folders, /mnt, /media, /run/user and /tmp. A volume's mount point is under
+// /var/lib/kevaso, so fusermount is refused there and the volume never lets go. The node side
+// runs as root with CAP_SYS_ADMIN, so it doesn't need fusermount. The JuiceFS client exits once
+// its mount is gone. A busy mount fails (EBUSY) and is tried again; it is never lazily detached.
 func (e Exec) Umount(ctx context.Context, dir string) error {
-	out, code, err := e.run(ctx, nil, "umount", dir)
-	return failed("umount "+dir, out, code, err)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	unmount := e.Unmount
+	if unmount == nil {
+		unmount = func(dir string) error { return syscall.Unmount(dir, 0) }
+	}
+	if err := unmount(dir); err != nil {
+		return fmt.Errorf("juicefs umount %s: %w", dir, err)
+	}
+	return nil
 }
 
 // Mounted implements Runner.
