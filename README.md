@@ -64,7 +64,11 @@ another's, or that must not take a stale write after a move.
     "metadata": "postgres://juicefs@10.63.0.1:5432/juicefs",
     "storage": "s3",
     "bucket": "https://objects.example.com/volumes",
-    "credentials": { "accessKey": "bucket-access-key", "secretKey": "bucket-secret-key", "metaPassword": "metadata-password" }
+    "credentials": {
+      "accessKey": { "name": "juicefs", "key": "access-key" },
+      "secretKey": { "name": "juicefs", "key": "secret-key" },
+      "metaPassword": { "name": "juicefs", "key": "metadata-password" }
+    }
   }]
 }
 ```
@@ -76,12 +80,14 @@ another's, or that must not take a stale write after a move.
 | `storage`, `bucket` | the object store's type (default `s3`) and URL |
 | `fileSystem` | the JuiceFS file system's name (default `kevaso`) |
 | `cacheDir`, `cacheSizeMiB` | the node side's local cache (default `/var/cache/kevaso-juicefs/CLASS`) |
-| `credentials` | the names of the cluster secrets holding the bucket's key pair and the metadata password; each optional. Install passes each name with `--cluster-secret` |
+| `credentials` | where the bucket's key pair and the metadata password are: each a cluster secret's `name` and one of its keys (`key`, default `value`); each optional. Install passes each cluster secret's name with `--cluster-secret` |
 | `stateDir`, `volumesDir` | the controller side's folder, and the folder the node side mounts under (kevasod's, `/var/lib/kevaso/volumes`) |
 
 The credentials reach the `juicefs` command through its environment (`ACCESS_KEY`, `SECRET_KEY`,
-`META_PASSWORD`), never its arguments. Outside systemd, `KEVASO_JUICEFS_CREDENTIALS_DIR` names a
-folder holding one file per credential.
+`META_PASSWORD`), never its arguments. The host keeps each cluster secret as a folder with one file
+per key, and systemd loads each key as the credential `NAME_KEY` (`juicefs_access-key`). Outside
+systemd, `KEVASO_JUICEFS_CREDENTIALS_DIR` names a folder holding one file per credential, named the
+same way.
 
 **The metadata database matters:** every host using the class must reach it. While it's down, calls
 into the volumes **wait** (no error), and go on once it's back; but the JuiceFS client gives up after
@@ -112,21 +118,13 @@ package says exactly what, in [`kevaso-plugin.json`](kevaso-plugin.json); `kvoad
 The node side's unit keeps `KillMode=process`, so restarting the plugin doesn't kill the `juicefs`
 daemons serving silos' volumes (it finds its mounts again in the host's mount table).
 
-Create the three cluster secrets, then allow exactly those names. Save the binding below as `juicefs-secrets.yaml`. `resourceNames` lists exactly these three. Both sides need all three, so the binding names both service accounts in the namespace `kevaso-system`: `plugin-juicefs` for the controller side and `plugin-juicefs-node` for the node side. A host fetches a value for a side only when that side's account may read the name.
+Create one cluster secret holding the three credentials as keys, then allow exactly that name. Both sides need it, so the binding names both service accounts in the namespace `kevaso-system`: `plugin-juicefs` for the controller side and `plugin-juicefs-node` for the node side. A host fetches a value for a side only when that side's account may read the name.
 
 ```bash
-kvo create clustersecret bucket-access-key --from-file bucket-access-key.txt
+kvo create clustersecret juicefs --from-file access-key=bucket-access-key.txt --from-file secret-key=bucket-secret-key.txt --from-file metadata-password=metadata-password.txt
 ```
 
-```bash
-kvo create clustersecret bucket-secret-key --from-file bucket-secret-key.txt
-```
-
-```bash
-kvo create clustersecret metadata-password --from-file metadata-password.txt
-```
-
-Save this as `juicefs-secrets.yaml`. `resourceNames` lists exactly these three.
+Save this as `juicefs-secrets.yaml`. `resourceNames` lists exactly that name.
 
 ```yaml
 apiVersion: kevaso/v1
@@ -135,7 +133,7 @@ metadata: { name: juicefs-secrets }
 rules:
   - verbs: [get]
     resources: [clustersecrets/value]
-    resourceNames: [bucket-access-key, bucket-secret-key, metadata-password]
+    resourceNames: [juicefs]
 ---
 apiVersion: kevaso/v1
 kind: ClusterRoleBinding
@@ -156,9 +154,7 @@ kvoadm plugin install root@cp-1 \
     --binary bin/kevaso-provider-juicefs-linux-amd64 \
     --manifest kevaso-plugin.json --yes \
     --config juicefs.json \
-    --cluster-secret bucket-access-key \
-    --cluster-secret bucket-secret-key \
-    --cluster-secret metadata-password
+    --cluster-secret juicefs
 ```
 
 ```bash
@@ -168,17 +164,15 @@ kvoadm plugin install root@hv-1 \
     --binary bin/kevaso-provider-juicefs-linux-amd64 \
     --manifest kevaso-plugin.json --yes \
     --config juicefs.json \
-    --cluster-secret bucket-access-key \
-    --cluster-secret bucket-secret-key \
-    --cluster-secret metadata-password
+    --cluster-secret juicefs
 ```
 
-Install creates the service account of the side it installs (`plugin-juicefs`, or `plugin-juicefs-node` with `--side node`) in the namespace `kevaso-system` and prints the account to bind. It records the names. It does not copy the files. Each host fetches the values and keeps copies only root can read. The plugin reads each name from its credential directory.
+Install creates the service account of the side it installs (`plugin-juicefs`, or `plugin-juicefs-node` with `--side node`) in the namespace `kevaso-system` and prints the account to bind. It records the name. It does not copy the files. Each host fetches the keys and keeps copies only root can read. The plugin reads each key from its credential directory as `juicefs_KEY`.
 
-To replace a value:
+To replace one key (the others stay):
 
 ```bash
-kvo set clustersecret bucket-secret-key --from-file bucket-secret-key.txt
+kvo set clustersecret juicefs --from-file secret-key=bucket-secret-key.txt
 ```
 
 Each host writes the new copy and restarts the plugin. The same bytes again leave the plugin running.

@@ -6,7 +6,7 @@
 // serve is the controller side, on control planes: it formats each class's JuiceFS file system
 // once and creates and deletes the volumes' folders. node is the node side, on workers: it mounts
 // a volume's folder where kevasod asks. Both run the juicefs command (on PATH, or --juicefs) and
-// read the classes' credentials from systemd credentials (LoadCredential=NAME:FILE), or, outside
+// read the classes' credentials from systemd credentials (NAME_KEY: a cluster secret's key), or, outside
 // systemd, from the folder KEVASO_JUICEFS_CREDENTIALS_DIR names; never from argv or the config.
 package main
 
@@ -95,7 +95,7 @@ func credential(name string) (string, error) {
 		dir = os.Getenv("KEVASO_JUICEFS_CREDENTIALS_DIR")
 	}
 	if dir == "" {
-		return "", errors.New("no credentials: run under systemd with LoadCredential=NAME:FILE (kvoadm plugin install --cluster-secret NAME)")
+		return "", errors.New("no credentials: run under systemd with LoadCredential=NAME:FOLDER (kvoadm plugin install --cluster-secret NAME), which loads each key as NAME_KEY")
 	}
 	b, err := os.ReadFile(filepath.Join(dir, name))
 	if err != nil {

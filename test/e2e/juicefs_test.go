@@ -202,23 +202,24 @@ func TestJuiceFS(t *testing.T) {
 	// with the manifest's privileges and nothing more.
 	cfgFile := filepath.Join(t.TempDir(), "juicefs.json")
 	cfg := fmt.Sprintf(`{"classes": [{"name": "juicefs", "metadata": %q, "bucket": %q,
-  "credentials": {"accessKey": "s3-access-key", "secretKey": "s3-secret-key", "metaPassword": "meta-password"}}]}`, meta, bucket)
+  "credentials": {"accessKey": {"name": "juicefs", "key": "s3-access-key"}, "secretKey": {"name": "juicefs", "key": "s3-secret-key"},
+    "metaPassword": {"name": "juicefs", "key": "meta-password"}}}]}`, meta, bucket)
 	_ = os.WriteFile(cfgFile, []byte(cfg), 0o644)
-	secretNames := []string{"s3-access-key", "s3-secret-key", "meta-password"}
-	installArgs := []string{"--name", "juicefs", "--binary", plugin, "--manifest", manifest, "--config", cfgFile}
-	for _, n := range secretNames {
-		installArgs = append(installArgs, "--cluster-secret", n)
-	}
+	// One cluster secret, its keys the three credentials (the plugin reads juicefs_KEY).
+	keys := []string{"s3-access-key", "s3-secret-key", "meta-password"}
+	installArgs := []string{"--name", "juicefs", "--binary", plugin, "--manifest", manifest, "--config", cfgFile, "--cluster-secret", "juicefs"}
 	if out, err := cl.c.Kvoadm(append(append([]string{"plugin", "install", "root@" + w1.Public, "--side", "node"}, installArgs...), b.SSHFlags()...)...); err == nil || !strings.Contains(out, "--yes") {
 		t.Fatalf("install without --yes: want a refusal naming --yes, got %v:\n%s", err, out)
 	}
 	if out, _ := b.SSH(ctx, w1, "test -e /etc/systemd/system/"+nodeUnit+".service && echo there"); strings.Contains(out, "there") {
 		t.Fatal("refused install left a unit behind")
 	}
-	for _, n := range secretNames {
-		kvo("create", "clustersecret", n, "--from-file", filepath.Join(creds, n))
+	create := []string{"create", "clustersecret", "juicefs"}
+	for _, k := range keys {
+		create = append(create, "--from-file", k+"="+filepath.Join(creds, k))
 	}
-	cl.c.MustKvo(grantClusterSecrets("juicefs", secretNames...), "apply", "-f", "-")
+	kvo(create...)
+	cl.c.MustKvo(grantClusterSecrets("juicefs", "juicefs"), "apply", "-f", "-")
 	cl.pluginInstall(cp, append(installArgs, "--yes")...)
 	for _, w := range []linodetest.Machine{w1, w2} {
 		cl.pluginInstall(w, append(installArgs, "--side", "node", "--yes")...)
