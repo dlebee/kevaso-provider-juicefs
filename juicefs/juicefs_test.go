@@ -19,14 +19,15 @@ const testMeta = "postgres://juicefs@10.63.0.1:5432/juicefs"
 func testConfig(t *testing.T) Config {
 	return Config{
 		Classes: []Class{{Name: "juicefs", Metadata: testMeta, Bucket: "https://s3.example.com/acme-volumes",
-			Credentials: Credentials{AccessKey: "bucket-key", SecretKey: "bucket-secret", MetaPassword: "meta-password"}}},
+			Credentials: Credentials{AccessKey: &SecretRef{Name: "bucket", Key: "access-key"}, SecretKey: &SecretRef{Name: "bucket", Key: "secret-key"},
+				MetaPassword: &SecretRef{Name: "meta-password"}}}},
 		StateDir:   t.TempDir(),
 		VolumesDir: t.TempDir(),
 	}
 }
 
 func testSecrets(name string) (string, error) {
-	if name == "missing" {
+	if name == "gone_value" {
 		return "", os.ErrNotExist
 	}
 	return "s3cr3t-" + name, nil
@@ -188,7 +189,7 @@ func TestFormatsOnlyOnce(t *testing.T) {
 				t.Fatalf("a credential in the arguments: %s", c)
 			}
 			if strings.HasPrefix(c, "status") || strings.HasPrefix(c, "format") || strings.HasPrefix(c, "mount") {
-				if !slices.Contains(run.envs[i], "META_PASSWORD=s3cr3t-meta-password") || !slices.Contains(run.envs[i], "ACCESS_KEY=s3cr3t-bucket-key") {
+				if !slices.Contains(run.envs[i], "META_PASSWORD=s3cr3t-meta-password_value") || !slices.Contains(run.envs[i], "ACCESS_KEY=s3cr3t-bucket_access-key") {
 					t.Fatalf("%s without its credentials: %v", c, len(run.envs[i]))
 				}
 			}
@@ -239,8 +240,8 @@ func TestControllerErrors(t *testing.T) {
 		t.Fatalf("delete a foreign handle: %v", err)
 	}
 	cfg := testConfig(t)
-	cfg.Classes[0].Credentials.MetaPassword = "missing"
-	if _, err := New(cfg, run, testSecrets).EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: "u/x", SizeBytes: 1 << 30}); err == nil || !strings.Contains(err.Error(), "credential missing") {
+	cfg.Classes[0].Credentials.MetaPassword = &SecretRef{Name: "gone"}
+	if _, err := New(cfg, run, testSecrets).EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: "u/x", SizeBytes: 1 << 30}); err == nil || !strings.Contains(err.Error(), "credential gone_value") {
 		t.Fatalf("a missing credential: %v", err)
 	}
 }

@@ -49,16 +49,37 @@ type Class struct {
 	// CacheDir is the node side's local cache for this class (default /var/cache/kevaso-juicefs/NAME).
 	CacheDir     string `json:"cacheDir,omitempty"`
 	CacheSizeMiB int    `json:"cacheSizeMiB,omitempty"`
-	// Credentials name the secrets (systemd credentials, LoadCredential=NAME:FILE) holding the
-	// bucket's key pair and the metadata password; each is optional.
+	// Credentials name the cluster secrets' keys holding the bucket's key pair and the metadata
+	// password; each is optional. kevasod keeps each cluster secret installed with
+	// --cluster-secret NAME as a folder, and LoadCredential=NAME:FOLDER loads each key as the
+	// systemd credential NAME_KEY.
 	Credentials Credentials `json:"credentials,omitempty"`
 }
 
-// Credentials are the names of a class's secrets, never the secrets themselves.
+// Credentials are references to a class's secrets, never the secrets themselves.
 type Credentials struct {
-	AccessKey    string `json:"accessKey,omitempty"`
-	SecretKey    string `json:"secretKey,omitempty"`
-	MetaPassword string `json:"metaPassword,omitempty"`
+	AccessKey    *SecretRef `json:"accessKey,omitempty"`
+	SecretKey    *SecretRef `json:"secretKey,omitempty"`
+	MetaPassword *SecretRef `json:"metaPassword,omitempty"`
+}
+
+// SecretRef names one key of a cluster secret. Key defaults to value (a cluster secret made with
+// one value).
+type SecretRef struct {
+	Name string `json:"name"`
+	Key  string `json:"key,omitempty"`
+}
+
+// Credential is the systemd credential the key is loaded as: NAME_KEY ("" for no reference).
+func (r *SecretRef) Credential() string {
+	if r == nil || r.Name == "" {
+		return ""
+	}
+	k := r.Key
+	if k == "" {
+		k = "value"
+	}
+	return r.Name + "_" + k
 }
 
 // Config is the provider's settings (not secret: credentials are named, and come separately).
@@ -141,7 +162,7 @@ func (c Config) classes() []kplugin.Class {
 	return out
 }
 
-// Secrets returns a secret by name (a systemd credential).
+// Secrets returns a secret by its systemd credential's name (SecretRef.Credential).
 type Secrets func(name string) (string, error)
 
 // fs is a class's file system with its credentials, read when needed.
@@ -154,7 +175,7 @@ func fsOf(cl Class, secrets Secrets) (FS, error) {
 		fs.Storage = "s3"
 	}
 	for _, c := range []struct{ env, name string }{
-		{"ACCESS_KEY", cl.Credentials.AccessKey}, {"SECRET_KEY", cl.Credentials.SecretKey}, {"META_PASSWORD", cl.Credentials.MetaPassword},
+		{"ACCESS_KEY", cl.Credentials.AccessKey.Credential()}, {"SECRET_KEY", cl.Credentials.SecretKey.Credential()}, {"META_PASSWORD", cl.Credentials.MetaPassword.Credential()},
 	} {
 		if c.name == "" {
 			continue
