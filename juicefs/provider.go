@@ -63,11 +63,10 @@ type Credentials struct {
 	MetaPassword *SecretRef `json:"metaPassword,omitempty"`
 }
 
-// SecretRef names one key of a cluster secret. Key defaults to value (a cluster secret made with
-// one value).
+// SecretRef names one key of a cluster secret: both are required (Config.Check), no key is assumed.
 type SecretRef struct {
 	Name string `json:"name"`
-	Key  string `json:"key,omitempty"`
+	Key  string `json:"key"`
 }
 
 // Credential is the systemd credential the key is loaded as: NAME_KEY ("" for no reference).
@@ -75,11 +74,15 @@ func (r *SecretRef) Credential() string {
 	if r == nil || r.Name == "" {
 		return ""
 	}
-	k := r.Key
-	if k == "" {
-		k = "value"
+	return r.Name + "_" + r.Key
+}
+
+// problem says what's wrong with a reference ("" if nothing, or no reference).
+func (r *SecretRef) problem(field string) string {
+	if r != nil && (r.Name == "" || r.Key == "") {
+		return fmt.Sprintf("credentials.%s names a cluster secret and its key: {\"name\": \"juicefs\", \"key\": \"%s\"}", field, field)
 	}
-	return r.Name + "_" + k
+	return ""
 }
 
 // Config is the provider's settings (not secret: credentials are named, and come separately).
@@ -119,6 +122,11 @@ func (c Config) Check() error {
 			return fmt.Errorf("class %s: the metadata URL holds a password: name a credential (credentials.metaPassword) instead", cl.Name)
 		case cl.Bucket == "":
 			return fmt.Errorf("class %s: no bucket", cl.Name)
+		}
+		for _, p := range []string{cl.Credentials.AccessKey.problem("accessKey"), cl.Credentials.SecretKey.problem("secretKey"), cl.Credentials.MetaPassword.problem("metaPassword")} {
+			if p != "" {
+				return fmt.Errorf("class %s: %s", cl.Name, p)
+			}
 		}
 		seen[cl.Name] = true
 	}
