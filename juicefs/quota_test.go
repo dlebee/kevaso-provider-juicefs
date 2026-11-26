@@ -22,7 +22,7 @@ func TestQuota(t *testing.T) {
 		t.Fatalf("ensure: %+v %v (quota %d GiB)", st, err, run.quota("/volumes/u1/home"))
 	}
 	for i, c := range run.calls {
-		if strings.HasPrefix(c, "quota") && !slices.Contains(run.envs[i], "META_PASSWORD=s3cr3t-meta-password_value") {
+		if strings.HasPrefix(c, "quota") && !slices.Contains(run.envs[i], "META_PASSWORD=s3cr3t-meta-password_password") {
 			t.Fatalf("%s without the metadata password", c)
 		}
 	}

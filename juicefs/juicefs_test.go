@@ -20,14 +20,14 @@ func testConfig(t *testing.T) Config {
 	return Config{
 		Classes: []Class{{Name: "juicefs", Metadata: testMeta, Bucket: "https://s3.example.com/acme-volumes",
 			Credentials: Credentials{AccessKey: &SecretRef{Name: "bucket", Key: "access-key"}, SecretKey: &SecretRef{Name: "bucket", Key: "secret-key"},
-				MetaPassword: &SecretRef{Name: "meta-password"}}}},
+				MetaPassword: &SecretRef{Name: "meta-password", Key: "password"}}}},
 		StateDir:   t.TempDir(),
 		VolumesDir: t.TempDir(),
 	}
 }
 
 func testSecrets(name string) (string, error) {
-	if name == "gone_value" {
+	if name == "gone_password" {
 		return "", os.ErrNotExist
 	}
 	return "s3cr3t-" + name, nil
@@ -67,6 +67,12 @@ func TestConfigCheck(t *testing.T) {
 		{"a redis password too", Config{Classes: []Class{{Name: "j", Metadata: "redis://:hunter2@db:6379/1", Bucket: "b"}}}, "holds a password"},
 		{"a port is no password", Config{Classes: []Class{{Name: "j", Metadata: "redis://db:6379/1", Bucket: "b"}}}, ""},
 		{"no bucket", Config{Classes: []Class{{Name: "j", Metadata: testMeta}}}, "no bucket"},
+		{"a credential without its key", Config{Classes: []Class{{Name: "j", Metadata: testMeta, Bucket: "b",
+			Credentials: Credentials{MetaPassword: &SecretRef{Name: "juicefs"}}}}}, `credentials.metaPassword names a cluster secret and its key`},
+		{"a credential without its secret", Config{Classes: []Class{{Name: "j", Metadata: testMeta, Bucket: "b",
+			Credentials: Credentials{AccessKey: &SecretRef{Key: "access-key"}}}}}, `credentials.accessKey names a cluster secret and its key`},
+		{"named keys", Config{Classes: []Class{{Name: "j", Metadata: testMeta, Bucket: "b",
+			Credentials: Credentials{AccessKey: &SecretRef{Name: "juicefs", Key: "access-key"}, MetaPassword: &SecretRef{Name: "juicefs", Key: "metadata-password"}}}}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.cfg.Check()
@@ -189,7 +195,7 @@ func TestFormatsOnlyOnce(t *testing.T) {
 				t.Fatalf("a credential in the arguments: %s", c)
 			}
 			if strings.HasPrefix(c, "status") || strings.HasPrefix(c, "format") || strings.HasPrefix(c, "mount") {
-				if !slices.Contains(run.envs[i], "META_PASSWORD=s3cr3t-meta-password_value") || !slices.Contains(run.envs[i], "ACCESS_KEY=s3cr3t-bucket_access-key") {
+				if !slices.Contains(run.envs[i], "META_PASSWORD=s3cr3t-meta-password_password") || !slices.Contains(run.envs[i], "ACCESS_KEY=s3cr3t-bucket_access-key") {
 					t.Fatalf("%s without its credentials: %v", c, len(run.envs[i]))
 				}
 			}
@@ -240,8 +246,8 @@ func TestControllerErrors(t *testing.T) {
 		t.Fatalf("delete a foreign handle: %v", err)
 	}
 	cfg := testConfig(t)
-	cfg.Classes[0].Credentials.MetaPassword = &SecretRef{Name: "gone"}
-	if _, err := New(cfg, run, testSecrets).EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: "u/x", SizeBytes: 1 << 30}); err == nil || !strings.Contains(err.Error(), "credential gone_value") {
+	cfg.Classes[0].Credentials.MetaPassword = &SecretRef{Name: "gone", Key: "password"}
+	if _, err := New(cfg, run, testSecrets).EnsureVolume(ctx, kplugin.Volume{Class: "juicefs", ID: "u/x", SizeBytes: 1 << 30}); err == nil || !strings.Contains(err.Error(), "credential gone_password") {
 		t.Fatalf("a missing credential: %v", err)
 	}
 }
